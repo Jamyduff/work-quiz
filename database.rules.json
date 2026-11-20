@@ -1,0 +1,74 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "nettest": {
+      ".read": true,
+      ".write": true
+    },
+    "games": {
+      "$code": {
+        "meta": {
+          ".read": "auth != null",
+          ".write": "auth != null && ((!data.exists() && newData.child('hostUid').val() === auth.uid) || data.child('hostUid').val() === auth.uid)"
+        },
+        "state": {
+          ".read": "auth != null",
+          ".write": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid"
+        },
+        "players": {
+          ".read": "auth != null",
+          "$uid": {
+            ".write": "auth != null && (auth.uid === $uid || root.child('games/' + $code + '/meta/hostUid').val() === auth.uid)",
+            ".validate": "!newData.exists() || (newData.child('name').isString() && newData.child('name').val().length > 0 && newData.child('name').val().length <= 24)"
+          }
+        },
+        "presence": {
+          ".read": "auth != null",
+          "$uid": {
+            ".write": "auth != null && (auth.uid === $uid || root.child('games/' + $code + '/meta/hostUid').val() === auth.uid)"
+          }
+        },
+        "assign": {
+          ".read": "auth != null",
+          ".write": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid"
+        },
+        "answers": {
+          ".read": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$qid": {
+            "$team": {
+              ".read": "auth != null && root.child('games/' + $code + '/assign/' + auth.uid + '/team').val() === $team",
+              "$uid": {
+                ".write": "auth != null && auth.uid === $uid && root.child('games/' + $code + '/assign/' + auth.uid + '/team').val() === $team && root.child('games/' + $code + '/state/qid').val() === $qid && root.child('games/' + $code + '/state/phase').val() === 'question' && now <= root.child('games/' + $code + '/state/startAt').val() + root.child('games/' + $code + '/state/seconds').val() * 1000 + 1500 && ((root.child('games/' + $code + '/state/mode').val() === 'captain' && !data.exists()) || (root.child('games/' + $code + '/state/mode').val() === 'agree' && !root.child('games/' + $code + '/locks/' + $qid + '/' + $team).exists()))",
+                ".validate": "newData.hasChildren(['opt', 'at']) && newData.child('at').val() === now && newData.child('opt').isString() && newData.child('opt').val().matches(/^[A-D]$/)"
+              }
+            }
+          }
+        },
+        "locks": {
+          ".read": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          ".write": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$qid": {
+            "$team": {
+              ".read": "auth != null && root.child('games/' + $code + '/assign/' + auth.uid + '/team').val() === $team"
+            }
+          }
+        },
+        "results": {
+          ".read": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          ".write": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$team": {
+            ".read": "auth != null && root.child('games/' + $code + '/assign/' + auth.uid + '/team').val() === $team"
+          }
+        },
+        "pscores": {
+          ".read": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          ".write": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$uid": {
+            ".read": "auth != null && auth.uid === $uid"
+          }
+        }
+      }
+    }
+  }
+}

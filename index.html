@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#3546c9">
+<title>Work Quiz</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="player">
+<div class="wrap">
+
+  <section id="s-loading" data-screen>
+    <p class="muted center" style="margin-top:40vh">Connecting…</p>
+  </section>
+
+  <section id="s-code" data-screen hidden>
+    <h1 style="margin-top:8vh">Work Quiz</h1>
+    <div class="card">
+      <form id="code-form">
+        <label class="field">Game code
+          <input type="text" id="code-input" maxlength="4" autocomplete="off" autocapitalize="characters" placeholder="e.g. KQPT" style="text-transform:uppercase; letter-spacing:.15em; font-weight:700">
+        </label>
+        <button class="btn btn-primary btn-big btn-block" type="submit">Continue</button>
+        <p class="error" id="code-error"></p>
+      </form>
+    </div>
+  </section>
+
+  <section id="s-join" data-screen hidden>
+    <h1 style="margin-top:6vh" id="join-title">Work Quiz</h1>
+    <div class="card">
+      <form id="join-form">
+        <label class="field">Your name
+          <input type="text" id="name-input" maxlength="24" autocomplete="given-name" placeholder="First name and initial">
+        </label>
+        <button class="btn btn-primary btn-big btn-block" type="submit" id="join-btn">Join the quiz</button>
+        <p class="error" id="join-error"></p>
+      </form>
+    </div>
+    <p class="muted small center" style="margin-top:14px">Keep this page open during the quiz.</p>
+  </section>
+
+  <section id="s-main" data-screen hidden>
+    <div class="row" id="p-head">
+      <div>
+        <div style="font-weight:800" id="p-name"></div>
+        <div class="muted small" id="p-team"></div>
+      </div>
+      <div class="spacer"></div>
+      <span class="pill" id="p-cap" hidden>★ Captain</span>
+    </div>
+    <div id="p-body"></div>
+  </section>
+
+  <section id="s-error" data-screen hidden>
+    <div class="card" style="margin-top:20vh">
+      <h2>Something went wrong</h2>
+      <p id="fatal-msg"></p>
+      <button class="btn btn-primary" onclick="location.reload()">Try again</button>
+    </div>
+  </section>
+</div>
+
+<script src="firebase-config.js"></script>
+<script src="quiz-lib.js"></script>
+<script src="common.js"></script>
+<script src="player.js"></script>
+</body>
+</html>
