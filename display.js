@@ -63,7 +63,8 @@
     var main = WQ.clear($("d-main"));
     var fn = {
       lobby: drawLobby, topics: drawTopics, roundIntro: drawRoundIntro, question: drawQuestion, closed: drawQuestion,
-      reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, final: drawFinal
+      reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, final: drawFinal,
+      picks: drawPicks, steal: drawSteal, stealReveal: drawStealReveal
     }[s.phase] || drawLobby;
     fn(main, s);
     if (s.phase !== "question" && timer.stop) { timer.stop(); timer.stop = null; timer.qid = null; }
@@ -159,6 +160,109 @@
     ]));
   }
 
+  // ---------- Doubles, poison and steals ----------
+  function activeTeamIds() { return teamIds().filter(function (t) { return membersOf(t).length > 0; }); }
+  function statusGrid(s) {
+    var sub = s.submitted || {};
+    return h("div", { class: "status-chips" }, activeTeamIds().map(function (t) {
+      return h("span", { class: "status-chip" + (sub[t] ? " done" : "") }, [(sub[t] ? "✓ " : "⏳ ") + teamName(t)]);
+    }));
+  }
+  function ruleCard(icon, title, text) {
+    return h("div", { class: "rule-card" }, [h("div", { class: "rule-icon", text: icon }), h("h3", { text: title }), h("p", { text: text })]);
+  }
+  function halfTableEl(st) {
+    return h("div", { class: "half-table" }, [
+      h("div", { class: "label", text: "Top half" }),
+      h("div", { class: "half" }, WQ.arr(st.top).map(function (n) { return h("span", { class: "team-chip", text: n }); })),
+      h("div", { class: "divider" }),
+      h("div", { class: "half" }, WQ.arr(st.bottom).map(function (n) { return h("span", { class: "team-chip", text: n }); })),
+      h("div", { class: "label", text: "Bottom half" })
+    ]);
+  }
+
+  function drawPicks(main, s) {
+    main.appendChild(h("h1", { class: "center", text: "Captains: choose your rounds" }));
+    main.appendChild(h("div", { class: "rules-row" }, [
+      ruleCard("×2", "Double", "One round that counts twice at the end. It can still be stolen!"),
+      ruleCard("☠", "Poison", "Five rounds that bite back: a team that tries to steal one loses those points."),
+      ruleCard("🎁", "Steal", "After round 9, every team must steal one round from another team.")
+    ]));
+    main.appendChild(h("div", { class: "topics compact" }, roundsList().filter(function (rd) { return rd.num <= WQ.DPS_ROUNDS; }).map(function (rd) {
+      return h("div", null, [h("span", { class: "num", text: rd.num }), rd.topic]);
+    })));
+    main.appendChild(statusGrid(s));
+  }
+
+  function drawSteal(main, s) {
+    main.appendChild(h("h1", { class: "center", text: "🎁 Steal time!" }));
+    main.appendChild(h("p", { class: "center muted", style: { maxWidth: "46em", margin: "0 auto 2vh", fontSize: "1.1em" },
+      text: "Captains: pick another team and one of their rounds (1–9). If it was poisoned, you lose those points. If not, you take them, doubled if it was their double round!" }));
+    if (s.standings) main.appendChild(halfTableEl(s.standings));
+    main.appendChild(statusGrid(s));
+  }
+
+  function drawStealReveal(main, s) {
+    var shown = s.shown || {}, n = s.count || 0, cur = shown["s" + (s.last || 0)];
+    if (!cur) {
+      main.appendChild(h("div", { class: "center" }, [
+        h("h1", { style: { fontSize: "4em" }, text: "The steals" }),
+        h("h2", { class: "muted", text: n + (n === 1 ? " steal" : " steals") + " to reveal. Who chose wisely?" })
+      ]));
+      return;
+    }
+    var outcome = cur.outcome === "poison" ? h("div", { class: "outcome poison", text: "☠ POISONED!" })
+      : cur.outcome === "stolen" ? h("div", { class: "outcome stolen", text: "💰 STOLEN!" })
+      : h("div", { class: "outcome waiting", text: "…" });
+    main.appendChild(h("div", { class: "center steal-card" }, [
+      h("div", { class: "muted", text: "Steal " + cur.n + " of " + n }),
+      h("h1", { text: cur.thief }),
+      h("p", { class: "muted", style: { fontSize: "1.3em", margin: ".2em 0" }, text: "are stealing from" }),
+      h("h1", { text: cur.target }),
+      h("p", { style: { fontSize: "1.5em", fontWeight: "800" }, text: "Round " + cur.round + ": " + cur.topic }),
+      outcome
+    ]));
+    var past = [];
+    for (var k = 1; k <= n; k++) {
+      var x = shown["s" + k];
+      if (x && k !== s.last && x.outcome) past.push(h("div", { class: "past-steal" }, [
+        x.thief + " → " + x.target + ", R" + x.round + ": ", h("strong", { text: x.outcome === "poison" ? "☠ poisoned" : "💰 stolen" })
+      ]));
+    }
+    if (past.length) main.appendChild(h("div", { class: "past-steals" }, past));
+  }
+
+  function drawDoublesSummary(main, s) {
+    var d = (s.shown && s.shown.doubles) || {};
+    main.appendChild(h("h1", { class: "center", text: "×2 Double rounds revealed" }));
+    main.appendChild(h("div", { class: "teams-grid", style: { marginTop: "3vh" } }, Object.keys(d).filter(function (k) { return k !== "none"; }).map(function (k) {
+      var x = d[k];
+      return h("div", { class: "team-card summary-card" }, [
+        h("h3", { text: x.team }),
+        h("div", { class: "names", text: x.round ? "Round " + x.round + ": " + x.topic : "No double round" }),
+        h("div", { class: "summary-pts gain", text: "+" + WQ.fmt(x.bonus) })
+      ]);
+    })));
+  }
+
+  function drawStealsSummary(main, s) {
+    var d = (s.shown && s.shown.steals) || {};
+    var rows = Object.keys(d).filter(function (k) { return k !== "none"; }).map(function (k) { return d[k]; })
+      .sort(function (a, b) { return a.n - b.n; });
+    main.appendChild(h("h1", { class: "center", text: "🎁 The steals: points won and lost" }));
+    main.appendChild(h("div", { class: "reveal-list" }, rows.map(function (x) {
+      var poison = x.outcome === "poison";
+      return h("div", { class: "reveal-row shown steal-row" }, [
+        h("span", { class: "place", text: poison ? "☠" : "💰" }),
+        h("span", { class: "who", text: x.thief + " → " + x.target + " · R" + x.round + " (" + x.topic + ")" }),
+        h("span", { class: "pts " + (poison ? "loss" : "gain"), text: (poison ? "−" : "+") + WQ.fmt(x.points) })
+      ]);
+    })));
+    if (rows.some(function (x) { return x.outcome === "stolen"; })) {
+      main.appendChild(h("p", { class: "center muted", style: { marginTop: "2vh" }, text: "Teams that were robbed lose those points (only once, even if more than one team stole the same round)." }));
+    }
+  }
+
   // ---------- Final reveal ----------
   var MEDAL = { 1: "🥇", 2: "🥈", 3: "🥉" };
   function ordinal(n) { return n + (["th", "st", "nd", "rd"][(n % 100 > 10 && n % 100 < 14) ? 0 : (n % 10 < 4 ? n % 10 : 0)]); }
@@ -171,6 +275,8 @@
     var nT = Object.keys(st).length, nP = Object.keys(sp).length;
     var last = s.last || {};
 
+    if (!nP && !nT && last.kind === "steals" && shown.steals) return drawStealsSummary(main, s);
+    if (!nP && !nT && last.kind === "doubles" && shown.doubles) return drawDoublesSummary(main, s);
     if (!nP && !nT) {
       main.appendChild(h("div", { class: "center" }, [
         h("div", { class: "festive-only big-emoji", text: "🎄" }),

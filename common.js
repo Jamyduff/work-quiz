@@ -13,6 +13,29 @@
   WQ.LETTERS = ["A", "B", "C", "D"];
   WQ.MODE_LABEL = { first: "First answer counts", agree: "Team agreement", captain: "First answer counts" };
 
+  // Doubles, poison and steals
+  WQ.DPS_ROUNDS = 9;        // picks and steals use rounds 1–9; round 10 is a normal final round
+  WQ.DPS_POISON = 5;        // poisoned rounds per team
+  WQ.DPS_STEAL_AFTER = 9;   // steals happen after round 9's standings
+
+  // Picks are stored as {double: 3, poison: {r1: true, r4: true, ...}}.
+  WQ.readPicks = function (v) {
+    if (!v) return null;
+    var poison = Object.keys(v.poison || {}).filter(function (k) { return v.poison[k]; })
+      .map(function (k) { return parseInt(String(k).replace(/\D/g, ""), 10); })
+      .filter(function (n) { return n >= 1 && n <= WQ.DPS_ROUNDS; }).sort(function (a, b) { return a - b; });
+    var dbl = parseInt(v.double, 10);
+    return { double: dbl >= 1 && dbl <= WQ.DPS_ROUNDS ? dbl : null, poison: poison };
+  };
+  WQ.picksValid = function (p) {
+    return !!(p && p.double && p.poison.length === WQ.DPS_POISON && p.poison.indexOf(p.double) < 0);
+  };
+  WQ.writePicks = function (p) {
+    var poison = {};
+    p.poison.forEach(function (n) { poison["r" + n] = true; });
+    return { double: p.double, poison: poison };
+  };
+
   WQ.speedPoints = function (elapsedMs, totalMs) {
     var f = Math.min(1, Math.max(0, elapsedMs / totalMs));
     return Math.round(WQ.POINTS_MAX - (WQ.POINTS_MAX - WQ.POINTS_MIN) * f);

@@ -3,9 +3,11 @@
   "use strict";
   var L = window.QuizLib, $ = WQ.$, h = WQ.h;
 
-  var g = { meta: null, state: null, players: {}, assign: {}, teamAnswers: {}, lock: null, results: null, pscores: null };
+  var g = { meta: null, state: null, players: {}, assign: {}, teamAnswers: {}, lock: null, results: null, pscores: null, picks: null, steal: null };
+  var draft = null, draftDirty = false;          // captain's unsaved picks
+  var stealDraft = null, stealDirty = false;     // captain's unsaved steal
   var me = { team: null, captain: false };
-  var subs = { answers: null, lock: null, results: null };
+  var subs = { answers: null, lock: null, results: null, picks: null, steal: null };
   var subKeys = { answers: null, lock: null, results: null };
   var timer = { qid: null, bar: null, stop: null };
   var flashMsg = "";
@@ -145,6 +147,14 @@
       subs.results = null; g.results = null;
       subKeys.results = rKey;
       if (rKey) subs.results = WQ.listen("results/" + rKey, function (v) { g.results = v; render(); });
+      if (subs.picks) subs.picks();
+      if (subs.steal) subs.steal();
+      subs.picks = subs.steal = null; g.picks = null; g.steal = null;
+      draft = null; draftDirty = false; stealDraft = null; stealDirty = false;
+      if (rKey && g.meta && g.meta.dps) {
+        subs.picks = WQ.listen("picks/" + rKey, function (v) { g.picks = WQ.readPicks(v); if (!draftDirty) draft = null; render(); });
+        subs.steal = WQ.listen("steals/" + rKey, function (v) { g.steal = v; if (!stealDirty) stealDraft = null; render(); });
+      }
     }
   }
 
@@ -194,7 +204,8 @@
     var body = WQ.clear($("p-body"));
     var fn = {
       lobby: drawLobby, topics: drawTopics, roundIntro: drawRoundIntro, question: drawQuestion, closed: drawQuestion,
-      reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, final: drawFinal
+      reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, final: drawFinal,
+      picks: drawPicks, steal: drawSteal, stealReveal: drawStealReveal
     }[s.phase] || drawLobby;
     fn(body, s);
     if (s.phase !== "question" && timer.stop) { timer.stop(); timer.stop = null; timer.qid = null; }
@@ -252,7 +263,8 @@
       h("div", { class: "big-number", style: { margin: "8px 0" }, text: s.roundTopic }),
       h("span", { class: "pill", text: WQ.MODE_LABEL[s.mode] }),
       h("p", { style: { marginTop: "14px" }, text: modeHelp(s.mode) }),
-      h("p", { class: "muted small", text: s.qCount + " questions" })
+      h("p", { class: "muted small", text: s.qCount + (s.qCount === 1 ? " question" : " questions") }),
+      roundFlag(s.round)
     ]));
     if (!me.team) body.appendChild(teamCard());
   }
@@ -277,7 +289,7 @@
     var reveal = s.phase === "reveal";
 
     body.appendChild(h("div", { class: "muted small", style: { marginTop: "12px" },
-      text: "Round " + s.round + " · " + s.roundTopic + " · Question " + s.qNum + " of " + s.qCount }));
+      text: "Round " + s.round + " · " + s.roundTopic + " · Question " + s.qNum + " of " + s.qCount + roundFlagShort(s.round) }));
     body.appendChild(h("h2", { style: { marginTop: "6px" }, text: q.text }));
 
     if (live) {
@@ -372,7 +384,8 @@
         h("div", { class: "score-box" }, [h("div", { class: "label", text: "You this round" }), h("div", { class: "val", text: WQ.fmt(WQ.sumPoints(pq, s.round)) })]),
         h("div", { class: "score-box" }, [h("div", { class: "label", text: "You in total" }), h("div", { class: "val", text: WQ.fmt(WQ.sumPoints(pq)) })])
       ]) : h("p", { class: "muted", text: "You're not in a team yet." }),
-      h("p", { class: "muted small", style: { marginTop: "12px" }, text: "Only your team can see your team's score." })
+      roundFlag(s.round),
+      h("p", { class: "muted small", style: { marginTop: "12px" }, text: "Only your team can see your team's score." + (g.meta && g.meta.dps ? " Doubles and steals are added at the end." : "") })
     ]));
   }
 
@@ -400,6 +413,7 @@
     var shown = s.shown || {}, sp = shown.players || {}, st = shown.teams || {};
     var medal = { 1: "🥇", 2: "🥈", 3: "🥉" };
     var allShown = Object.keys(sp).length >= counts.players && Object.keys(st).length >= counts.teams;
+    var teamFinal = g.results && g.results.final;
     function list(title, n, map) {
       var items = [];
       for (var place = 1; place <= n; place++) {
@@ -416,10 +430,172 @@
       h("h2", { text: allShown ? "That's the end of the quiz!" : "Final results" }),
       allShown ? null : h("p", { class: "muted", text: "Watch the big screen. The results are revealed one at a time, and your own scores appear here at the end." }),
       me.team && allShown ? h("div", { class: "score-grid" }, [
-        h("div", { class: "score-box" }, [h("div", { class: "label", text: "Your team" }), h("div", { class: "val", text: WQ.fmt(WQ.sumPoints(tq)) })]),
+        h("div", { class: "score-box" }, [h("div", { class: "label", text: "Your team" }), h("div", { class: "val", text: WQ.fmt(teamFinal ? teamFinal.total : WQ.sumPoints(tq)) }),
+          teamFinal && g.meta && g.meta.dps ? h("div", { class: "small muted", text: WQ.fmt(teamFinal.base) + " from questions, " + signed(teamFinal.doubleBonus) + " double, " + signed(teamFinal.steals) + " steals" }) : null]),
         h("div", { class: "score-box" }, [h("div", { class: "label", text: "You" }), h("div", { class: "val", text: WQ.fmt(WQ.sumPoints(pq)) })])
       ]) : null
-    ].concat(list("Top players", counts.players, sp)).concat(list("Top teams", counts.teams, st))));
+    ].concat(dpsLists(shown)).concat(list("Top players", counts.players, sp)).concat(list("Top teams", counts.teams, st))));
+  }
+
+  function signed(n) { n = n || 0; return (n < 0 ? "−" : "+") + WQ.fmt(Math.abs(n)); }
+
+  function dpsLists(shown) {
+    var out = [];
+    var d = shown.doubles, st = shown.steals;
+    if (d) {
+      out.push(h("h3", { style: { marginTop: "16px" }, text: "×2 Double rounds" }));
+      out.push(h("ul", { class: "list" }, Object.keys(d).filter(function (k) { return k !== "none"; }).map(function (k) {
+        var x = d[k];
+        return h("li", null, [h("span", { style: { flex: "1" }, text: x.team + (x.round ? ": R" + x.round + " " + x.topic : "") }), h("strong", { text: "+" + WQ.fmt(x.bonus) })]);
+      })));
+    }
+    if (st) {
+      var rows = Object.keys(st).filter(function (k) { return k !== "none"; }).map(function (k) { return st[k]; }).sort(function (a, b) { return a.n - b.n; });
+      out.push(h("h3", { style: { marginTop: "16px" }, text: "Steals" }));
+      out.push(h("ul", { class: "list" }, rows.map(function (x) {
+        var poison = x.outcome === "poison";
+        return h("li", null, [h("span", { style: { flex: "1" }, text: (poison ? "☠ " : "💰 ") + x.thief + " → " + x.target + " R" + x.round }),
+          h("strong", { style: { color: poison ? "var(--bad)" : "var(--ok)" }, text: (poison ? "−" : "+") + WQ.fmt(x.points) })]);
+      })));
+    }
+    return out;
+  }
+
+  // ---------- Doubles, poison and steals ----------
+  function roundStatus(n) {
+    if (!(g.meta && g.meta.dps) || !g.picks || !n) return null;
+    if (g.picks.double === n) return "dbl";
+    if (g.picks.poison.indexOf(n) >= 0) return "psn";
+    return null;
+  }
+  function roundFlag(n) {
+    var st = roundStatus(n);
+    if (st === "dbl") return h("div", { class: "round-flag dbl", text: "×2 This is your team's double round: it counts twice at the end." });
+    if (st === "psn") return h("div", { class: "round-flag psn", text: "☠ This is one of your team's poisoned rounds: anyone who steals it loses the points." });
+    return null;
+  }
+  function roundFlagShort(n) {
+    var st = roundStatus(n);
+    return st === "dbl" ? " · ×2 your double" : st === "psn" ? " · ☠ your poison" : "";
+  }
+  function dpsRounds() {
+    return roundsList().filter(function (rd) { return rd.num <= WQ.DPS_ROUNDS; });
+  }
+
+  function drawPicks(body) {
+    if (!me.team) return body.appendChild(teamCard());
+    var saved = g.picks;
+    if (!draft) draft = saved ? { double: saved.double, poison: saved.poison.slice() } : { double: null, poison: [] };
+    var cap = captainUid();
+    var card = h("div", { class: "card" }, [
+      h("h2", { text: me.captain ? "Choose your team's rounds" : "Your team's rounds" }),
+      h("p", { class: "small", text: "×2 Double: one round that counts twice at the end. It can still be stolen." }),
+      h("p", { class: "small", text: "☠ Poison: five rounds that bite back. Any team that tries to steal one loses those points." }),
+      me.captain ? h("p", { class: "muted small", text: "Talk it over with your team, then save. You can change your picks until round 1 starts." })
+        : h("p", { class: "muted small", text: (cap ? nameOf(cap) : "Your captain") + " is choosing. Help them decide!" })
+    ]);
+    var list = h("div", { style: { marginTop: "8px" } });
+    dpsRounds().forEach(function (rd) {
+      var n = rd.num, isD = draft.double === n, isP = draft.poison.indexOf(n) >= 0;
+      var row = h("div", { class: "pick-row" }, [h("span", { class: "topic" }, [h("span", { class: "num", text: n + "." }), rd.topic])]);
+      if (me.captain) {
+        row.appendChild(h("button", { class: "pick-btn dbl" + (isD ? " on" : ""), type: "button", onclick: function () {
+          draftDirty = true;
+          draft.double = isD ? null : n;
+          draft.poison = draft.poison.filter(function (x) { return x !== n; });
+          render();
+        } }, ["×2"]));
+        row.appendChild(h("button", { class: "pick-btn psn" + (isP ? " on" : ""), type: "button",
+          disabled: !isP && draft.poison.length >= WQ.DPS_POISON, onclick: function () {
+            draftDirty = true;
+            if (isP) draft.poison = draft.poison.filter(function (x) { return x !== n; });
+            else { draft.poison.push(n); draft.poison.sort(function (a, b) { return a - b; }); if (draft.double === n) draft.double = null; }
+            render();
+          } }, ["☠"]));
+      } else if (saved) {
+        if (saved.double === n) row.appendChild(h("span", { class: "pick-badge dbl", text: "×2 Double" }));
+        if (saved.poison.indexOf(n) >= 0) row.appendChild(h("span", { class: "pick-badge psn", text: "☠ Poison" }));
+      }
+      list.appendChild(row);
+    });
+    card.appendChild(list);
+    if (me.captain) {
+      var ok = WQ.picksValid(draft);
+      var savedSame = saved && WQ.picksValid(saved) && saved.double === draft.double && saved.poison.join() === draft.poison.join();
+      card.appendChild(h("p", { class: "small", style: { marginTop: "10px", fontWeight: "700" },
+        text: "Double: " + (draft.double ? 1 : 0) + " of 1 · Poison: " + draft.poison.length + " of " + WQ.DPS_POISON }));
+      card.appendChild(h("button", { class: "btn btn-primary btn-big btn-block", type: "button", disabled: !ok || savedSame, onclick: function () {
+        L.set(WQ.ref("picks/" + me.team), WQ.writePicks(draft)).then(function () { draftDirty = false; flashMsg = ""; render(); })
+          .catch(function () { flashMsg = "Couldn't save your picks. Round 1 may have started."; render(); });
+      } }, [savedSame ? "Saved ✓" : "Save picks"]));
+      if (savedSame) card.appendChild(h("p", { class: "muted small center", style: { marginTop: "8px" }, text: "Saved. You can still change them until round 1 starts." }));
+    } else if (!saved) {
+      card.appendChild(h("p", { class: "muted", style: { marginTop: "10px" }, text: "Nothing saved yet." }));
+    }
+    body.appendChild(card);
+    if (flashMsg) body.appendChild(h("div", { class: "status bad", text: flashMsg }));
+  }
+
+  function drawSteal(body) {
+    if (!me.team) return body.appendChild(teamCard());
+    var saved = g.steal;
+    if (!stealDraft) stealDraft = saved ? { target: saved.target, round: saved.round } : { target: null, round: null };
+    var teams = Object.keys((g.meta && g.meta.teams) || {}).filter(function (t) {
+      return t !== me.team && Object.keys(g.assign).some(function (uid) { return g.assign[uid] && g.assign[uid].team === t && g.players[uid]; });
+    }).sort(function (a, b) { return teamName(a).localeCompare(teamName(b)); });
+    var cap = captainUid();
+    var card = h("div", { class: "card" }, [
+      h("h2", { text: "🎁 Steal time!" }),
+      h("p", { class: "small", text: "Pick another team and one of their rounds. If it was poisoned, your team loses those points. If not, you take them, doubled if it was their double round." }),
+      me.captain ? null : h("p", { class: "muted small", text: (cap ? nameOf(cap) : "Your captain") + " is choosing. Help them decide!" })
+    ]);
+    if (me.captain) {
+      card.appendChild(h("h3", { style: { marginTop: "10px" }, text: "1. Which team?" }));
+      card.appendChild(h("div", { class: "choice-grid" }, teams.map(function (t) {
+        return h("button", { class: "choice" + (stealDraft.target === t ? " on" : ""), type: "button", onclick: function () { stealDirty = true; stealDraft.target = t; render(); } }, [teamName(t)]);
+      })));
+      card.appendChild(h("h3", { style: { marginTop: "14px" }, text: "2. Which round?" }));
+      card.appendChild(h("div", { class: "choice-grid" }, dpsRounds().map(function (rd) {
+        return h("button", { class: "choice" + (stealDraft.round === rd.num ? " on" : ""), type: "button", onclick: function () { stealDirty = true; stealDraft.round = rd.num; render(); } },
+          [rd.num + ". " + rd.topic]);
+      })));
+      var ok = stealDraft.target && stealDraft.round;
+      var same = saved && saved.target === stealDraft.target && saved.round === stealDraft.round;
+      card.appendChild(h("button", { class: "btn btn-primary btn-big btn-block", style: { marginTop: "14px" }, type: "button", disabled: !ok || same, onclick: function () {
+        L.set(WQ.ref("steals/" + me.team), { target: stealDraft.target, round: stealDraft.round })
+          .then(function () { stealDirty = false; flashMsg = ""; render(); })
+          .catch(function () { flashMsg = "Couldn't save your steal. The reveal may have started."; render(); });
+      } }, [same ? "Steal locked in ✓" : "Lock in our steal"]));
+      if (same) card.appendChild(h("p", { class: "muted small center", style: { marginTop: "8px" }, text: "You can change it until the quiz master starts the reveal." }));
+    } else {
+      card.appendChild(h("div", { class: "status" + (saved ? " ok" : ""), text: saved
+        ? "Your team is stealing round " + saved.round + " (" + topicOf(saved.round) + ") from " + teamName(saved.target) + "."
+        : "No steal chosen yet." }));
+    }
+    body.appendChild(card);
+    if (flashMsg) body.appendChild(h("div", { class: "status bad", text: flashMsg }));
+  }
+
+  function topicOf(n) {
+    var rd = roundsList().filter(function (r) { return r.num === n; })[0];
+    return rd ? rd.topic : "Round " + n;
+  }
+
+  function drawStealReveal(body, s) {
+    var shown = s.shown || {}, n = s.count || 0, rows = [];
+    for (var k = 1; k <= n; k++) {
+      var x = shown["s" + k];
+      if (!x) continue;
+      rows.push(h("li", null, [
+        h("span", { style: { flex: "1" }, text: x.thief + " → " + x.target + ", R" + x.round + " (" + x.topic + ")" }),
+        h("strong", { text: x.outcome === "poison" ? "☠ Poisoned" : x.outcome === "stolen" ? "💰 Stolen" : "…" })
+      ]));
+    }
+    body.appendChild(h("div", { class: "card" }, [
+      h("h2", { text: "The steals" }),
+      h("p", { class: "muted small", text: "Watch the big screen! The points come out in the final reveal." }),
+      rows.length ? h("ul", { class: "list" }, rows) : h("p", { class: "muted", text: "Starting soon…" })
+    ]));
   }
 
   // ---------- Go ----------

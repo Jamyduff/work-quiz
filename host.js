@@ -5,7 +5,7 @@
 
   var quiz = null;      // the full quiz, including answers. Only ever kept on this computer.
   var pendingCheck = null;
-  var game = { meta: null, state: null, players: {}, presence: {}, assign: {}, answers: {}, locks: {}, results: {}, pscores: {} };
+  var game = { meta: null, state: null, players: {}, presence: {}, assign: {}, answers: {}, locks: {}, results: {}, pscores: {}, picks: {}, steals: {} };
   var curQid = null, unsubAnswers = null, unsubLocks = null;
   var closeTimer = null, stopCountdown = null;
   var pendingLocks = {};
@@ -171,6 +171,14 @@
         return h("tr", null, [h("td", { text: rd.num }), h("td", { text: rd.topic }), h("td", { text: WQ.MODE_LABEL[rd.mode] }), h("td", { class: "num", text: rd.questions.length })]);
       }))));
     }
+    if (q && q.rounds.length) {
+      var ten = q.rounds.length === 10;
+      body.appendChild(h("label", { class: "row", style: { marginTop: "14px", fontWeight: "600" } }, [
+        h("input", { type: "checkbox", id: "dps-toggle", checked: ten, disabled: !ten }),
+        "Play doubles, poison and steals",
+        h("span", { class: "muted small", style: { fontWeight: "400" }, text: ten ? "(captains choose a double round and five poisoned rounds, and every team steals after round 9)" : "(needs exactly 10 rounds)" })
+      ]));
+    }
     if (res.warnings.length) {
       body.appendChild(h("p", { class: "small", style: { marginTop: "12px", fontWeight: "600" }, text: "Worth knowing:" }));
       body.appendChild(h("ul", { class: "issues small" }, res.warnings.map(function (w) { return h("li", { text: w }); })));
@@ -182,6 +190,7 @@
   $("create").addEventListener("click", function () {
     if (!pendingCheck || !pendingCheck.quiz) return;
     quiz = pendingCheck.quiz;
+    quiz.dps = !!($("dps-toggle") && $("dps-toggle").checked);
     $("create").disabled = true;
     createGame(0);
   });
@@ -198,7 +207,7 @@
     quiz.teams.forEach(function (name, i) { teams["t" + (i + 1)] = { name: name, order: i + 1 }; });
     var rounds = {};
     quiz.rounds.forEach(function (rd) { rounds["r" + rd.num] = { num: rd.num, topic: rd.topic, mode: rd.mode, count: rd.questions.length }; });
-    var meta = { hostUid: WQ.uid, created: L.serverTimestamp(), title: quiz.title, teams: teams, rounds: rounds, totalRounds: quiz.rounds.length, theme: "festive" };
+    var meta = { hostUid: WQ.uid, created: L.serverTimestamp(), title: quiz.title, teams: teams, rounds: rounds, totalRounds: quiz.rounds.length, theme: "festive", dps: !!quiz.dps };
     L.set(L.ref(WQ.db, "games/" + code + "/meta"), meta)
       .then(function () { return L.set(L.ref(WQ.db, "games/" + code + "/state"), { phase: "lobby" }); })
       .then(function () {
@@ -237,6 +246,8 @@
     WQ.listen("assign", function (v) { game.assign = v || {}; render(); });
     WQ.listen("results", function (v) { game.results = v || {}; render(); });
     WQ.listen("pscores", function (v) { game.pscores = v || {}; render(); });
+    WQ.listen("picks", function (v) { game.picks = v || {}; syncSubmitted(); render(); });
+    WQ.listen("steals", function (v) { game.steals = v || {}; syncSubmitted(); render(); });
   }
 
   $("g-theme").addEventListener("change", function () {
@@ -435,16 +446,154 @@
     return L.set(WQ.ref("state"), { phase: "standings", round: s.round, totalRounds: quiz.rounds.length, standings: table });
   }
 
+  // ---------- Doubles, poison and steals ----------
+  function dpsOn() { return !!(game.meta && game.meta.dps); }
+  function picksOf(tid) { return WQ.readPicks(game.picks[tid]); }
+  function stealOf(tid) {
+    var v = game.steals[tid];
+    return v && v.target && v.round ? { target: v.target, round: parseInt(v.round, 10) } : null;
+  }
+  function roundPoints(tid) {
+    var q = (game.results[tid] || {}).q || {}, out = {};
+    Object.keys(q).forEach(function (k) { var x = q[k]; if (x) out[x.round] = (out[x.round] || 0) + (x.points || 0); });
+    return out;
+  }
+  function shuffleArr(a) {
+    for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+    return a;
+  }
+  function randomPicks() {
+    var r = [];
+    for (var i = 1; i <= WQ.DPS_ROUNDS; i++) r.push(i);
+    shuffleArr(r);
+    return { double: r[0], poison: r.slice(1, 1 + WQ.DPS_POISON).sort(function (a, b) { return a - b; }) };
+  }
+  function randomSteal(tid) {
+    var others = activeTeams().filter(function (t) { return t !== tid; });
+    if (!others.length) return null;
+    return { target: others[Math.floor(Math.random() * others.length)], round: 1 + Math.floor(Math.random() * WQ.DPS_ROUNDS) };
+  }
+  function picksText(p) {
+    if (!p) return "not chosen";
+    return (p.double ? "×2 round " + p.double : "no double") + " · ☠ " + (p.poison.length ? p.poison.join(", ") : "none");
+  }
+
+  // Every team's score including doubles and steals. Each steal is settled on its own, using round
+  // scores from before any steals. A team can lose a round's points only once, but every team that
+  // steals it gets the full amount.
+  function breakdown() {
+    var teams = activeTeams(), rp = {}, out = {}, steals = [], lost = {};
+    teams.forEach(function (t) {
+      rp[t] = roundPoints(t);
+      var base = Object.keys(rp[t]).reduce(function (sum, r) { return sum + rp[t][r]; }, 0);
+      var pk = dpsOn() ? picksOf(t) : null;
+      out[t] = { base: base, doubleRound: pk && pk.double ? pk.double : null,
+        doubleBonus: pk && pk.double ? (rp[t][pk.double] || 0) : 0, stealGain: 0, stealLoss: 0, robbed: 0 };
+    });
+    if (dpsOn()) teams.forEach(function (thief) {
+      var st = stealOf(thief);
+      if (!st || !out[st.target] || st.target === thief) return;
+      var T = st.target, r = st.round, pk = picksOf(T) || { double: null, poison: [] };
+      var poisoned = pk.poison.indexOf(r) >= 0, isDouble = pk.double === r;
+      var pts = (rp[T][r] || 0) * (isDouble ? 2 : 1);
+      if (poisoned) out[thief].stealLoss -= pts;
+      else {
+        out[thief].stealGain += pts;
+        if (!lost[T + "|" + r]) { lost[T + "|" + r] = true; out[T].robbed -= pts; }
+      }
+      steals.push({ thief: thief, target: T, round: r, outcome: poisoned ? "poison" : "stolen", points: pts });
+    });
+    teams.forEach(function (t) { var o = out[t]; o.total = o.base + o.doubleBonus + o.stealGain + o.stealLoss + o.robbed; });
+    return { teams: out, steals: steals };
+  }
+
+  function submittedMap(kind) {
+    var m = {};
+    activeTeams().forEach(function (t) { m[t] = kind === "picks" ? WQ.picksValid(picksOf(t)) : !!stealOf(t); });
+    return m;
+  }
+  function syncSubmitted() {
+    var s = game.state;
+    if (!s || (s.phase !== "picks" && s.phase !== "steal")) return;
+    var m = submittedMap(s.phase === "picks" ? "picks" : "steals");
+    if (JSON.stringify(m) !== JSON.stringify(s.submitted || {})) L.update(WQ.ref("state"), { submitted: m }).catch(warn);
+  }
+  function missingCount(kind) {
+    var m = submittedMap(kind);
+    return Object.keys(m).filter(function (t) { return !m[t]; }).length;
+  }
+  function openPicks() {
+    return L.set(WQ.ref("state"), { phase: "picks", totalRounds: quiz.rounds.length, submitted: submittedMap("picks") });
+  }
+  function startAfterPicks() {
+    var upd = {};
+    activeTeams().forEach(function (t) { if (!WQ.picksValid(picksOf(t))) upd["picks/" + t] = WQ.writePicks(randomPicks()); });
+    return (Object.keys(upd).length ? L.update(WQ.ref(""), upd) : Promise.resolve()).then(function () { return roundIntro(1); });
+  }
+  function openSteals() {
+    var s = game.state;
+    return L.set(WQ.ref("state"), { phase: "steal", round: s.round, totalRounds: quiz.rounds.length,
+      submitted: submittedMap("steals"), standings: s.standings || null });
+  }
+  function stealOrderList() {
+    var saved = WQ.store.get("wq-host") || {};
+    return saved.code === WQ.code && saved.stealOrder ? saved.stealOrder : [];
+  }
+  function startStealReveal() {
+    var s = game.state, upd = {}, merged = {};
+    activeTeams().forEach(function (t) {
+      var st = stealOf(t);
+      if (!st) { st = randomSteal(t); if (st) upd["steals/" + t] = st; }
+      if (st) merged[t] = st;
+    });
+    var order = shuffleArr(Object.keys(merged));
+    var saved = WQ.store.get("wq-host") || {};
+    saved.stealOrder = order;
+    WQ.store.set("wq-host", saved);
+    upd["state"] = { phase: "stealReveal", round: s.round, totalRounds: quiz.rounds.length, step: 0, count: order.length };
+    return L.update(WQ.ref(""), upd);
+  }
+  function stealRevealNext() {
+    var s = game.state, order = stealOrderList(), step = s.step || 0, i = Math.floor(step / 2), tid = order[i];
+    var st = tid && stealOf(tid);
+    if (!st) return;
+    var upd = {}, key = "state/shown/s" + (i + 1);
+    upd["state/step"] = step + 1;
+    upd["state/last"] = i + 1;
+    if (step % 2 === 0) {
+      upd[key] = { n: i + 1, thief: teamName(tid), target: teamName(st.target), round: st.round, topic: roundOf(st.round).topic };
+    } else {
+      var pk = picksOf(st.target) || { poison: [] };
+      upd[key + "/outcome"] = pk.poison.indexOf(st.round) >= 0 ? "poison" : "stolen";
+    }
+    return L.update(WQ.ref(""), upd);
+  }
+
   // ---------- Final reveal ----------
-  // The full order is worked out once and kept on this computer. Only names already revealed go online.
+  // The full order is worked out once and kept on this computer. Only what's been revealed goes online.
   var MAX_PLAYERS = 5, MAX_TEAMS = 3;
   function ordinal(n) { return n + (["th", "st", "nd", "rd"][(n % 100 > 10 && n % 100 < 14) ? 0 : (n % 10 < 4 ? n % 10 : 0)]); }
   function buildFinalSequence() {
-    var teams = activeTeams().map(function (tid) { return { name: teamName(tid), points: teamTotal(tid) }; })
-      .sort(function (a, b) { return b.points - a.points; }).slice(0, MAX_TEAMS);
+    var b = breakdown();
+    var teams = activeTeams().map(function (tid) { return { name: teamName(tid), points: b.teams[tid].total }; })
+      .sort(function (a, b2) { return b2.points - a.points; }).slice(0, MAX_TEAMS);
     var players = Object.keys(game.players).map(function (uid) { return { name: playerName(uid), points: playerTotal(uid) }; })
-      .sort(function (a, b) { return b.points - a.points; }).slice(0, MAX_PLAYERS);
+      .sort(function (a, b2) { return b2.points - a.points; }).slice(0, MAX_PLAYERS);
     var seq = [], i;
+    if (dpsOn()) {
+      var doubles = {};
+      activeTeams().forEach(function (tid) {
+        var t = b.teams[tid];
+        doubles[tid] = { team: teamName(tid), round: t.doubleRound || 0, topic: t.doubleRound ? roundOf(t.doubleRound).topic : "", bonus: t.doubleBonus };
+      });
+      seq.push({ kind: "doubles", data: doubles });
+      var steals = {};
+      b.steals.forEach(function (st, k) {
+        steals["s" + (k + 1)] = { n: k + 1, thief: teamName(st.thief), target: teamName(st.target), round: st.round,
+          topic: roundOf(st.round).topic, outcome: st.outcome, points: st.points };
+      });
+      seq.push({ kind: "steals", data: steals });
+    }
     for (i = players.length - 1; i >= 0; i--) seq.push({ kind: "players", place: i + 1, name: players[i].name, points: players[i].points });
     for (i = teams.length - 1; i >= 0; i--) seq.push({ kind: "teams", place: i + 1, name: teams[i].name, points: teams[i].points });
     return { seq: seq, players: players.length, teams: teams.length };
@@ -462,19 +611,33 @@
     delete saved.finalSeq;
     WQ.store.set("wq-host", saved);
     var f = finalSequence();
-    return L.set(WQ.ref("state"), { phase: "final", totalRounds: quiz.rounds.length, step: 0,
-      counts: { players: f.players, teams: f.teams } });
+    var b = breakdown(), upd = {};
+    // Each team's own final total (only that team can read it), shown on their phones after the reveal.
+    activeTeams().forEach(function (tid) {
+      var t = b.teams[tid];
+      upd["results/" + tid + "/final"] = { base: t.base, doubleBonus: t.doubleBonus, steals: t.stealGain + t.stealLoss + t.robbed, total: t.total };
+    });
+    upd["state"] = { phase: "final", totalRounds: quiz.rounds.length, step: 0, dps: dpsOn(),
+      counts: { players: f.players, teams: f.teams } };
+    return L.update(WQ.ref(""), upd);
   }
   function revealNext() {
     var s = game.state, f = finalSequence(), item = f.seq[s.step || 0];
     if (!item) return;
     var upd = {};
     upd["state/step"] = (s.step || 0) + 1;
-    upd["state/last"] = { kind: item.kind, place: item.place };
-    upd["state/shown/" + item.kind + "/p" + item.place] = { place: item.place, name: item.name, points: item.points };
+    if (item.kind === "doubles" || item.kind === "steals") {
+      upd["state/last"] = { kind: item.kind };
+      upd["state/shown/" + item.kind] = Object.keys(item.data).length ? item.data : { none: true };
+    } else {
+      upd["state/last"] = { kind: item.kind, place: item.place };
+      upd["state/shown/" + item.kind + "/p" + item.place] = { place: item.place, name: item.name, points: item.points };
+    }
     return L.update(WQ.ref(""), upd);
   }
   function finalLabel(item) {
+    if (item.kind === "doubles") return "Reveal everyone's double round";
+    if (item.kind === "steals") return "Reveal the steal points";
     return "Reveal " + ordinal(item.place) + " place " + (item.kind === "players" ? "player" : "team") +
       (item.place === 1 ? (item.kind === "teams" ? " 🏆" : " ⭐") : "");
   }
@@ -482,9 +645,15 @@
   function nextStep() {
     var s = game.state || { phase: "lobby" };
     var total = quiz.rounds.length;
+    var plural = function (n, one, many) { return n + " " + (n === 1 ? one : many); };
     switch (s.phase) {
       case "lobby": return { label: "Start quiz (show the round topics)", run: function () { return L.set(WQ.ref("state"), { phase: "topics", totalRounds: total }); } };
-      case "topics": return { label: "Start round 1", run: function () { return roundIntro(1); } };
+      case "topics":
+        if (dpsOn()) return { label: "Open the double and poison picks", run: openPicks };
+        return { label: "Start round 1", run: function () { return roundIntro(1); } };
+      case "picks":
+        var mp = missingCount("picks");
+        return { label: "Start round 1" + (mp ? " (" + plural(mp, "team hasn't", "teams haven't") + " chosen: random picks)" : ""), run: startAfterPicks };
       case "roundIntro": return { label: "Start question 1", run: function () { return startQuestion(s.round, 1); } };
       case "question": return { label: "Waiting for answers…", disabled: true };
       case "closed": return { label: "Reveal the answer", run: revealAnswer };
@@ -495,11 +664,23 @@
         if (WQ.STANDINGS_AFTER.indexOf(s.round) >= 0 && s.round < total) return { label: "Show the standings", run: showStandings };
         if (s.round < total) return { label: "Start round " + (s.round + 1), run: function () { return roundIntro(s.round + 1); } };
         return { label: "Finish the quiz", run: finish };
-      case "standings": return { label: "Start round " + (s.round + 1), run: function () { return roundIntro(s.round + 1); } };
+      case "standings":
+        if (dpsOn() && s.round === WQ.DPS_STEAL_AFTER) return { label: "Open the steals", run: openSteals };
+        return { label: "Start round " + (s.round + 1), run: function () { return roundIntro(s.round + 1); } };
+      case "steal":
+        var ms = missingCount("steals");
+        return { label: "Reveal the steals" + (ms ? " (" + plural(ms, "team hasn't", "teams haven't") + " chosen: random steals)" : ""), run: startStealReveal };
+      case "stealReveal":
+        var step = s.step || 0, n = s.count || 0;
+        if (step < n * 2) {
+          var idx = Math.floor(step / 2), tid = stealOrderList()[idx];
+          if (step % 2 === 0) return { label: "Reveal steal " + (idx + 1) + " of " + n + (tid ? ": " + teamName(tid) : ""), run: stealRevealNext };
+          return { label: "Reveal the result", run: stealRevealNext };
+        }
+        return { label: "Start round " + (s.round + 1), run: function () { return roundIntro(s.round + 1); } };
       case "final":
         var f = finalSequence(), item = f.seq[s.step || 0];
-        if (!s.step) return { label: "Start the reveal: " + (f.players ? ordinal(f.players) + " place player" : ordinal(f.teams) + " place team"), run: revealNext };
-        if (item) return { label: finalLabel(item), run: revealNext };
+        if (item) return { label: (s.step ? "" : "Start the reveal: ") + finalLabel(item), run: revealNext };
         return { label: "Quiz finished 🎉", disabled: true };
     }
     return { label: "…", disabled: true };
@@ -680,6 +861,9 @@
       reveal: "Answer revealed",
       roundEnd: "End of round " + s.round,
       standings: "Standings after round " + s.round,
+      picks: "Captains are choosing their double and poisoned rounds",
+      steal: "Captains are choosing their steals",
+      stealReveal: "Revealing the steals",
       final: "Final results"
     }[s.phase] || s.phase;
     $("c-phase").textContent = phaseText;
@@ -708,18 +892,47 @@
       ]));
     }
 
+    var privateBox = function (title, rows) {
+      qbox.appendChild(h("div", { class: "card", style: { background: "#f6f7fb", marginTop: "10px" } },
+        [h("div", { class: "muted small", text: title })].concat(rows)));
+    };
     if (s.phase === "final") {
       var fs = finalSequence(), nextItem = fs.seq[s.step || 0];
-      qbox.appendChild(h("div", { class: "card", style: { background: "#f6f7fb", marginTop: "10px" } }, [
-        h("div", { class: "muted small", text: "Revealed " + (s.step || 0) + " of " + fs.seq.length + (nextItem ? " · up next (only you can see this):" : "") }),
-        nextItem ? h("div", { style: { fontWeight: "700", fontSize: "1.1rem", marginTop: "4px" },
-          text: ordinal(nextItem.place) + " place " + (nextItem.kind === "players" ? "player" : "team") + ": " + nextItem.name + " (" + WQ.fmt(nextItem.points) + ")" }) : h("div", { text: "Everything has been revealed." })
-      ]));
+      var nextText = !nextItem ? "Everything has been revealed."
+        : nextItem.kind === "doubles" ? "Everyone's double round and bonus points"
+        : nextItem.kind === "steals" ? "The points won and lost in the steals"
+        : ordinal(nextItem.place) + " place " + (nextItem.kind === "players" ? "player" : "team") + ": " + nextItem.name + " (" + WQ.fmt(nextItem.points) + ")";
+      privateBox("Revealed " + (s.step || 0) + " of " + fs.seq.length + (nextItem ? " · up next (only you can see this):" : ""),
+        [h("div", { style: { fontWeight: "700", fontSize: "1.1rem", marginTop: "4px" }, text: nextText })]);
+    }
+    if (s.phase === "picks") {
+      privateBox("Picks so far (only you can see these)", [h("table", { class: "live-table" }, activeTeams().map(function (tid) {
+        var p = picksOf(tid), ok = WQ.picksValid(p);
+        return h("tr", null, [h("td", { text: teamName(tid) }), h("td", null, [h("span", { class: "pill " + (ok ? "pill-ok" : "pill-warn"), text: ok ? "Chosen" : "Choosing…" })]),
+          h("td", { class: "small", text: p ? picksText(p) : "" })]);
+      }))]);
+    }
+    if (s.phase === "steal") {
+      privateBox("Steals so far (only you can see these)", [h("table", { class: "live-table" }, activeTeams().map(function (tid) {
+        var st = stealOf(tid);
+        return h("tr", null, [h("td", { text: teamName(tid) }), h("td", null, [h("span", { class: "pill " + (st ? "pill-ok" : "pill-warn"), text: st ? "Chosen" : "Choosing…" })]),
+          h("td", { class: "small", text: st ? teamName(st.target) + ", round " + st.round + " (" + roundOf(st.round).topic + ")" : "" })]);
+      }))]);
+    }
+    if (s.phase === "stealReveal") {
+      var stepN = s.step || 0, idxN = Math.floor(stepN / 2), tidN = stealOrderList()[idxN], stN = tidN && stealOf(tidN);
+      if (stN) {
+        var pkN = picksOf(stN.target) || { poison: [], double: null };
+        var res = pkN.poison.indexOf(stN.round) >= 0 ? "☠ poisoned" : (pkN.double === stN.round ? "stolen (it's their double round)" : "stolen");
+        privateBox("Steal " + (idxN + 1) + " of " + (s.count || 0) + " (only you can see the result):",
+          [h("div", { style: { fontWeight: "700", fontSize: "1.1rem", marginTop: "4px" },
+            text: teamName(tidN) + " → " + teamName(stN.target) + ", round " + stN.round + " (" + roundOf(stN.round).topic + "): " + res })]);
+      }
     }
 
     // Issues to sort out before starting
     var issues = WQ.clear($("c-issues"));
-    if (s.phase === "lobby" || s.phase === "topics") {
+    if (s.phase === "lobby" || s.phase === "topics" || s.phase === "picks") {
       var list = [];
       var un = unassigned().length;
       if (!Object.keys(game.players).length) list.push("Nobody has joined yet.");
@@ -781,10 +994,24 @@
     body.hidden = !scoresVisible;
     if (!scoresVisible) return;
     WQ.clear(body);
-    var teams = activeTeams().map(function (tid) { return { name: teamName(tid), points: teamTotal(tid) }; })
-      .sort(function (a, b) { return b.points - a.points; });
-    body.appendChild(h("table", { class: "live-table" }, [h("tr", null, [h("th", { text: "Team" }), h("th", { class: "num", text: "Points" })])]
-      .concat(teams.map(function (t) { return h("tr", null, [h("td", { text: t.name }), h("td", { class: "num", text: WQ.fmt(t.points) })]); }))));
+    var b = breakdown();
+    var teams = activeTeams().map(function (tid) { return { tid: tid, name: teamName(tid), b: b.teams[tid] }; })
+      .sort(function (x, y) { return y.b.total - x.b.total; });
+    var signed = function (n) { return n ? (n > 0 ? "+" : "−") + WQ.fmt(Math.abs(n)) : "–"; };
+    if (dpsOn()) {
+      body.appendChild(h("table", { class: "live-table" }, [h("tr", null, [h("th", { text: "Team" }), h("th", { class: "num", text: "Questions" }),
+        h("th", { class: "num", text: "Double" }), h("th", { class: "num", text: "Steals" }), h("th", { class: "num", text: "Total" })])]
+        .concat(teams.map(function (t) {
+          return h("tr", null, [h("td", { text: t.name }), h("td", { class: "num", text: WQ.fmt(t.b.base) }),
+            h("td", { class: "num", text: signed(t.b.doubleBonus) + (t.b.doubleRound ? " (R" + t.b.doubleRound + ")" : "") }),
+            h("td", { class: "num", text: signed(t.b.stealGain + t.b.stealLoss + t.b.robbed) }),
+            h("td", { class: "num", style: { fontWeight: "800" }, text: WQ.fmt(t.b.total) })]);
+        }))));
+      body.appendChild(h("p", { class: "muted small", style: { marginTop: "6px" }, text: "Steals count once the steals have been chosen. The standings use question points only." }));
+    } else {
+      body.appendChild(h("table", { class: "live-table" }, [h("tr", null, [h("th", { text: "Team" }), h("th", { class: "num", text: "Points" })])]
+        .concat(teams.map(function (t) { return h("tr", null, [h("td", { text: t.name }), h("td", { class: "num", text: WQ.fmt(t.b.total) })]); }))));
+    }
     var players = Object.keys(game.players).map(function (uid) { return { name: playerName(uid), points: playerTotal(uid) }; })
       .sort(function (a, b) { return b.points - a.points; }).slice(0, 10);
     body.appendChild(h("h3", { style: { marginTop: "14px" }, text: "Top players" }));

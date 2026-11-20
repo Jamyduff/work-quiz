@@ -244,3 +244,52 @@ body.display.festive .lights { display: flex; justify-content: space-between; po
 
 /* ---------- Final reveal (phones) ---------- */
 .reveal-mini li.hiddenrow { color: var(--muted); }
+
+/* ---------- Doubles, poison and steals (big screen) ---------- */
+body.display .rules-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2vw; margin: 2vh 0; }
+body.display .rule-card { background: rgba(255,255,255,.08); border-radius: 16px; padding: 1em 1.2em; text-align: center; }
+body.display .rule-card .rule-icon { font-size: 2.2em; font-weight: 900; }
+body.display .rule-card h3 { font-size: 1.3em; margin: .2em 0; }
+body.display .rule-card p { margin: 0; color: #e3e7f5; }
+body.display .topics.compact { grid-template-columns: repeat(3, 1fr); font-size: 1em; gap: .6vh 2vw; margin-bottom: 1vh; }
+body.display .team-card.done { outline: 2px solid var(--gold); }
+body.display .steal-card h1 { font-size: 3.4em; margin: .1em 0; }
+body.display .outcome { font-size: 4em; font-weight: 900; margin-top: .3em; animation: pop .7s cubic-bezier(.2,1.4,.4,1); }
+body.display .outcome.poison { color: #ff7a6e; }
+body.display .outcome.stolen { color: var(--gold); }
+body.display .outcome.waiting { color: rgba(255,255,255,.4); animation: none; }
+body.display .past-steals { display: flex; flex-wrap: wrap; gap: .6em 1.2em; justify-content: center; margin-top: 3vh; font-size: .9em; color: #cfd5ff; }
+body.display .past-steal { background: rgba(255,255,255,.07); border-radius: 999px; padding: .3em .9em; }
+body.display .summary-card { text-align: center; }
+body.display .summary-pts { font-size: 1.8em; font-weight: 900; margin-top: .3em; }
+body.display .gain { color: var(--gold); }
+body.display .loss { color: #ff7a6e; }
+body.display .steal-row .who { font-size: .8em; }
+body.display.festive .rule-card { background: rgba(255,255,255,.08); border: 1px solid rgba(242,193,78,.35); }
+body.display.festive .past-steal { color: #f3dca2; }
+
+/* ---------- Picks and steals (phones) ---------- */
+.pick-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+.pick-row:first-child { border-top: 0; }
+.pick-row .topic { flex: 1; font-weight: 600; }
+.pick-row .topic .num { color: var(--muted); margin-right: 6px; }
+.pick-btn { font: inherit; font-weight: 800; border-radius: 10px; border: 2px solid var(--line); background: #fff; padding: 6px 10px; min-width: 52px; cursor: pointer; }
+.pick-btn.on.dbl { background: var(--gold); border-color: var(--gold); color: #fff; }
+.pick-btn.on.psn { background: #4b2a6b; border-color: #4b2a6b; color: #fff; }
+.pick-btn:disabled { opacity: .35; cursor: default; }
+.pick-badge { font-weight: 800; border-radius: 999px; padding: 2px 10px; font-size: .85rem; }
+.pick-badge.dbl { background: var(--gold); color: #fff; }
+.pick-badge.psn { background: #4b2a6b; color: #fff; }
+.choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.choice { font: inherit; font-weight: 700; text-align: left; border: 2px solid var(--line); background: #fff; border-radius: 12px; padding: 10px 12px; cursor: pointer; }
+.choice.on { border-color: var(--accent); background: #eceefe; }
+.choice:disabled { cursor: default; }
+.round-flag { margin-top: 12px; border-radius: 12px; padding: 10px 12px; font-weight: 700; }
+.round-flag.dbl { background: #fff4d6; color: #8a5a00; }
+.round-flag.psn { background: #efe6f7; color: #4b2a6b; }
+body.display .status-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: .6em 1em; margin-top: 2vh; }
+body.display .status-chip { background: rgba(255,255,255,.08); border: 2px dashed rgba(255,255,255,.25); border-radius: 999px; padding: .4em 1.1em; font-weight: 800; font-size: 1.05em; }
+body.display .status-chip.done { border-style: solid; border-color: var(--gold); }
+body.display .rule-card { padding: .7em 1em; }
+body.display .rule-card .rule-icon { font-size: 1.8em; }
+body.display .rule-card p { font-size: .9em; }
