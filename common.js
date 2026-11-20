@@ -11,7 +11,7 @@
   WQ.GRACE_MS = 1500;        // answers arriving just after the timer still count
   WQ.STANDINGS_AFTER = [4, 9];
   WQ.LETTERS = ["A", "B", "C", "D"];
-  WQ.MODE_LABEL = { captain: "Captain's call", agree: "Team agreement" };
+  WQ.MODE_LABEL = { first: "First answer counts", agree: "Team agreement", captain: "First answer counts" };
 
   WQ.speedPoints = function (elapsedMs, totalMs) {
     var f = Math.min(1, Math.max(0, elapsedMs / totalMs));

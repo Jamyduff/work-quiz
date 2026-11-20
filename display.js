@@ -102,7 +102,7 @@
   }
 
   function drawRoundIntro(main, s) {
-    var help = s.mode === "captain" ? "The captain's tap decides each team's answer. Everyone answers for their own score too."
+    var help = s.mode !== "agree" ? "The first tap in each team locks in the team's answer, so talk it through before anyone taps! Everyone answers for their own score too."
       : "Each team's answer locks in when everyone picks the same option. If time runs out, the captain's pick counts for half points.";
     main.appendChild(h("div", { class: "center" }, [
       h("h2", { text: "Round " + s.round }),

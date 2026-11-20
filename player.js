@@ -164,7 +164,7 @@
     var s = g.state;
     if (!s || s.phase !== "question" || !me.team) return;
     var mine = g.teamAnswers[WQ.uid];
-    if (s.mode === "captain" && mine) return;
+    if (s.mode !== "agree" && mine) return;
     if (s.mode === "agree" && g.lock) return;
     if (mine && mine.opt === letter) return;
     flashMsg = "";
@@ -211,7 +211,7 @@
     return h("div", { class: "card" }, [
       h("div", { class: "muted small", text: "Your team" }),
       h("h2", { text: teamName(me.team) }),
-      me.captain ? h("p", { class: "status ok", text: "You're the captain. You'll decide your team's answer in captain's call rounds, and when time runs out in agreement rounds." })
+      me.captain ? h("p", { class: "status ok", text: "You're the captain. You'll choose your team's double and poisoned rounds and its steal, and your pick counts if time runs out in a team agreement round." })
         : h("p", { class: "muted", text: cap ? "Captain: " + nameOf(cap) : "The quiz master will choose a captain." }),
       h("ul", { class: "list" }, mates.map(function (uid) {
         return h("li", null, [h("span", { text: nameOf(uid) + (uid === WQ.uid ? " (you)" : "") }), g.assign[uid].captain ? h("span", { class: "captain-star", text: "★" }) : null]);
@@ -240,9 +240,8 @@
   }
 
   function modeHelp(mode) {
-    if (mode === "captain") {
-      return me.captain ? "Captain's call: your tap locks in the team's answer, so talk it through quickly!"
-        : "Captain's call: your captain's tap decides the team's answer. Tap your own answer too, for your personal score.";
+    if (mode !== "agree") {
+      return "First answer counts: the first tap from anyone in your team locks in the team's answer, so talk it through before anyone taps! Everyone still answers for their own score.";
     }
     return "Team agreement: your team's answer locks in when everyone picks the same option. If time runs out, the captain's pick counts for half points.";
   }
@@ -264,6 +263,16 @@
     var cap = captainUid();
     var capAns = cap ? g.teamAnswers[cap] : null;
     var lock = g.lock;
+    // First-answer rounds: the earliest tap in the team is the team's answer (the quiz master's screen confirms it).
+    var first = null;
+    if (s.mode !== "agree") {
+      if (lock) first = { uid: lock.by, opt: lock.opt };
+      else Object.keys(g.teamAnswers).forEach(function (uid) {
+        var a = g.teamAnswers[uid];
+        if (a && typeof a.at === "number" && (!first || a.at < first.at)) first = { uid: uid, opt: a.opt, at: a.at };
+      });
+    }
+    var firstWho = first ? (first.uid === WQ.uid ? "you" : firstName(first.uid)) : "";
     var live = s.phase === "question";
     var reveal = s.phase === "reveal";
 
@@ -281,7 +290,7 @@
       body.appendChild(timer.bar);
     }
 
-    var canTap = live && me.team && !(s.mode === "captain" && mine) && !(s.mode === "agree" && lock);
+    var canTap = live && me.team && !(s.mode !== "agree" && mine) && !(s.mode === "agree" && lock);
     var opts = h("div", { class: "opts", style: { marginTop: live ? "0" : "14px" } });
     WQ.arr(q.options).forEach(function (text, i) {
       var L_ = WQ.LETTERS[i];
@@ -300,9 +309,9 @@
         }
       }
       var btn = h("button", { class: cls, type: "button", disabled: !canTap, onclick: function () { choose(L_); } }, inner);
-      // Captain's choice is highlighted for everyone in the team
-      var teamPick = lock ? lock.opt : (s.mode === "captain" && capAns ? capAns.opt : null);
-      if (teamPick === L_) btn.appendChild(h("span", { class: "cap-tag", text: s.mode === "captain" ? "★ Captain's pick" : "Team answer" }));
+      // The team's answer is highlighted for everyone in the team
+      var teamPick = s.mode !== "agree" ? (first && first.opt) : (lock ? lock.opt : null);
+      if (teamPick === L_) btn.appendChild(h("span", { class: "cap-tag", text: s.mode !== "agree" ? "Team answer (" + firstWho + ")" : "Team answer" }));
       else if (s.mode === "agree" && !lock && capAns && capAns.opt === L_ && cap !== WQ.uid) btn.appendChild(h("span", { class: "cap-tag", text: "★ Captain" }));
       opts.appendChild(btn);
     });
@@ -313,12 +322,12 @@
     if (!me.team) status = h("div", { class: "status warn", text: "You're not in a team yet, so you can't answer. The quiz master will put you in one." });
     else if (reveal) status = drawRevealStatus(s);
     else if (s.phase === "closed") status = h("div", { class: "status", text: "Time's up! Waiting for the answer…" });
-    else if (s.mode === "captain") {
-      if (lock || capAns) {
-        var opt = (lock || capAns).opt;
-        status = h("div", { class: "status ok", text: me.captain ? "You locked in " + opt + " for the team." : "Your captain picked " + opt + ". " + (mine ? "Your answer: " + mine.opt + "." : "Tap your own answer for personal points.") });
-      } else if (me.captain) status = h("div", { class: "status", text: "You're captain: your tap locks in the team's answer." });
-      else status = h("div", { class: "status", text: (mine ? "Your answer: " + mine.opt + ". " : "") + "Waiting for your captain" + (cap ? " (" + nameOf(cap) + ")" : "") + "…" });
+    else if (s.mode !== "agree") {
+      if (first) {
+        status = h("div", { class: "status ok", text: first.uid === WQ.uid
+          ? "You were first, so you locked in " + first.opt + " for your team."
+          : nameOf(first.uid) + " was first, so the team's answer is " + first.opt + ". " + (mine ? "Your answer: " + mine.opt + "." : "Tap your own answer for personal points.") });
+      } else status = h("div", { class: "status", text: "The first tap in your team locks in the team's answer. Talk it through before anyone taps!" });
     } else {
       if (lock) status = h("div", { class: "status ok", text: "Agreed! Your team locked in " + lock.opt + "." });
       else {
@@ -342,7 +351,8 @@
     var teamRes = g.results && g.results.q && g.results.q[s.qid];
     var youTxt = mineRes ? (mineRes.correct ? "✓ Right! +" + WQ.fmt(mineRes.points) : "✗ Not this time")
       : (mine ? "Working it out…" : "You didn't answer");
-    var how = { captain: "Captain's pick", agreed: "Agreed answer", timeout: "Time ran out, so the captain's pick counted for half points", none: "No team answer" };
+    var how = { first: "First answer in: " + (teamRes && teamRes.by ? (teamRes.by === WQ.uid ? "you" : nameOf(teamRes.by)) : ""), captain: "Captain's pick",
+      agreed: "Agreed answer", timeout: "Time ran out, so the captain's pick counted for half points", none: "No team answer" };
     var teamTxt = teamRes ? (teamRes.correct ? "✓ +" + WQ.fmt(teamRes.points) : "✗ 0") : "…";
     wrap.appendChild(h("div", { class: "score-grid" }, [
       h("div", { class: "score-box" }, [h("div", { class: "label", text: "You" }), h("div", { class: "val", style: { fontSize: "1.15rem" }, text: youTxt })]),

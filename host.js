@@ -100,7 +100,7 @@
     roundRows.slice(1).forEach(function (r) {
       var num = parseInt(r[0], 10);
       if (!(num >= 1 && num <= 10)) return;
-      rounds[num] = { num: num, topic: str(r[1]), mode: /agree/i.test(str(r[2])) ? "agree" : "captain", questions: [] };
+      rounds[num] = { num: num, topic: str(r[1]), mode: /agree/i.test(str(r[2])) ? "agree" : "first", questions: [] };
     });
 
     qRows.slice(1).forEach(function (r, i) {
@@ -124,7 +124,7 @@
         warnings.push("Questions row " + rowNo + ": seconds should be between 5 and 120, so 20 will be used.");
         seconds = 20;
       }
-      if (!rounds[num]) rounds[num] = { num: num, topic: "", mode: "captain", questions: [] };
+      if (!rounds[num]) rounds[num] = { num: num, topic: "", mode: "first", questions: [] };
       rounds[num].questions.push({ text: text, options: raw.slice(0, count), answer: ans, seconds: seconds, picture: str(r[8]) });
     });
 
@@ -266,6 +266,15 @@
       .sort(function (a, b) { return playerName(a).localeCompare(playerName(b)); });
   }
   function roundOf(n) { return quiz.rounds[n - 1]; }
+  // Earliest answer in a team (answers arrive in the order the database received them).
+  function firstAnswer(ans) {
+    var best = null;
+    Object.keys(ans || {}).forEach(function (uid) {
+      var a = ans[uid];
+      if (a && typeof a.at === "number" && (!best || a.at < best.at)) best = { uid: uid, opt: a.opt, at: a.at };
+    });
+    return best;
+  }
   function currentQuestion() {
     var s = game.state; var rd = s && roundOf(s.round);
     return rd && s.qNum ? rd.questions[s.qNum - 1] : null;
@@ -302,7 +311,7 @@
     }
   }
 
-  // Lock in team answers as they happen (captain's tap, or everyone agreeing).
+  // Lock in team answers as they happen (the first tap in a team, or everyone agreeing).
   function checkLocks() {
     var s = game.state;
     if (!s || s.phase !== "question" || !s.qid) return;
@@ -311,9 +320,9 @@
       var key = "locks/" + s.qid + "/" + tid;
       if (game.locks[tid] || pendingLocks[key]) return;
       var ans = game.answers[tid] || {};
-      if (s.mode === "captain") {
-        var cap = captainOf(tid);
-        if (cap && ans[cap]) upd[key] = { opt: ans[cap].opt, at: ans[cap].at, how: "captain" };
+      if (s.mode !== "agree") {
+        var first = firstAnswer(ans);
+        if (first) upd[key] = { opt: first.opt, at: first.at, how: "first", by: first.uid };
       } else {
         var online = membersOf(tid).filter(isOnline);
         if (!online.length) return;
@@ -386,12 +395,14 @@
         if (lock) {
           res = { opt: lock.opt, how: lock.how, correct: lock.opt === correct,
                   points: lock.opt === correct ? WQ.speedPoints(lock.at - s.startAt, total) : 0 };
+          if (lock.by) res.by = lock.by;
         } else if (cap && ans[cap] && s.mode === "agree") {
           res = { opt: ans[cap].opt, how: "timeout", correct: ans[cap].opt === correct,
                   points: ans[cap].opt === correct ? WQ.POINTS_TIMEOUT : 0 };
-        } else if (cap && ans[cap]) {
-          res = { opt: ans[cap].opt, how: "captain", correct: ans[cap].opt === correct,
-                  points: ans[cap].opt === correct ? WQ.speedPoints(ans[cap].at - s.startAt, total) : 0 };
+        } else if (s.mode !== "agree" && firstAnswer(ans)) {
+          var fa = firstAnswer(ans);
+          res = { opt: fa.opt, how: "first", by: fa.uid, correct: fa.opt === correct,
+                  points: fa.opt === correct ? WQ.speedPoints(fa.at - s.startAt, total) : 0 };
         } else {
           res = { opt: "", how: "none", correct: false, points: 0 };
         }
@@ -659,7 +670,7 @@
       if (un) list.push(un + (un === 1 ? " person isn't" : " people aren't") + " in a team yet.");
       activeTeams().forEach(function (tid) { if (!captainOf(tid)) list.push(teamName(tid) + " has no captain."); });
       list.forEach(function (t) { issues.appendChild(h("li", { class: "pill-warn", style: { padding: "4px 8px", borderRadius: "8px", marginTop: "4px" }, text: t })); });
-    } else if (["roundIntro", "question"].indexOf(s.phase) >= 0) {
+    } else if (["roundIntro", "question"].indexOf(s.phase) >= 0 && s.mode === "agree") {
       activeTeams().forEach(function (tid) {
         var cap = captainOf(tid);
         if (!cap) issues.appendChild(h("li", { class: "error", text: teamName(tid) + " has no captain." }));
@@ -687,9 +698,12 @@
         var answered = members.filter(function (uid) { return ans[uid]; }).length;
         var lock = game.locks[tid];
         var res = s.phase === "reveal" && game.results[tid] && game.results[tid].q ? game.results[tid].q[s.qid] : null;
-        var how = { captain: "captain", agreed: "agreed", timeout: "time ran out: captain's pick", none: "no answer" };
-        var teamAns = res ? (res.opt ? res.opt + " (" + how[res.how] + ")" : "No answer")
-          : lock ? lock.opt + " (" + how[lock.how] + ")" : (s.phase === "question" ? "…" : "not locked");
+        var howText = function (x) {
+          if (x.how === "first") return "first in: " + playerName(x.by);
+          return { agreed: "agreed", timeout: "time ran out: captain's pick", none: "no answer" }[x.how] || x.how;
+        };
+        var teamAns = res ? (res.opt ? res.opt + " (" + howText(res) + ")" : "No answer")
+          : lock ? lock.opt + " (" + howText(lock) + ")" : (s.phase === "question" ? "…" : "not locked");
         live.appendChild(h("tr", null, [
           h("td", { text: teamName(tid) }),
           h("td", { text: answered + " / " + members.length + (online.length < members.length ? " (" + online.length + " connected)" : "") }),
