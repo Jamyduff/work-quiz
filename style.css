@@ -166,3 +166,81 @@ body.host .wrap { max-width: 1180px; }
 .issues li { padding: 4px 0; }
 .qr-small svg { width: 150px; height: 150px; display: block; }
 .confirming { background: var(--bad) !important; color: #fff !important; border-color: var(--bad) !important; }
+
+/* ---------- Final reveal (big screen) ---------- */
+body.display .reveal-list { max-width: 900px; margin: 2vh auto 0; display: flex; flex-direction: column; gap: 1.2vh; width: 100%; }
+body.display .reveal-row { display: grid; grid-template-columns: 3.2em 1fr auto; align-items: center; gap: 1em;
+  background: rgba(255,255,255,.07); border: 2px dashed rgba(255,255,255,.18); border-radius: 16px; padding: .6em 1em; font-size: 1.5em; }
+body.display .reveal-row .place { font-weight: 800; font-size: 1.1em; text-align: center; }
+body.display .reveal-row .who { font-weight: 800; color: rgba(255,255,255,.35); }
+body.display .reveal-row .pts { font-weight: 800; font-variant-numeric: tabular-nums; }
+body.display .reveal-row.shown { border-style: solid; border-color: rgba(255,255,255,.25); background: rgba(255,255,255,.12); }
+body.display .reveal-row.shown .who { color: #fff; }
+body.display .reveal-row.winner { border-color: var(--gold); box-shadow: 0 0 30px rgba(227,164,0,.35); }
+body.display .reveal-row.fresh { animation: pop .7s cubic-bezier(.2,1.4,.4,1); }
+body.display .reveal-list.compact .reveal-row { font-size: 1em; padding: .45em .8em; }
+@keyframes pop { 0% { transform: scale(.6); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+
+body.display .final-grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 4vw; align-items: end; }
+body.display .podium { display: flex; align-items: flex-end; justify-content: center; gap: 1.5vw; height: 55vh; margin-top: 2vh; }
+body.display .podium-col { flex: 1; max-width: 22vw; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+body.display .podium-name { font-size: 1.35em; line-height: 1.15; font-weight: 800; text-align: center; margin-bottom: .3em; color: rgba(255,255,255,.35); }
+body.display .podium-col.shown .podium-name { color: #fff; }
+body.display .podium-pts { font-size: 1.05em; font-weight: 700; color: #cfd5ff; min-height: 1.4em; margin-bottom: .5em; }
+body.display .podium-block { width: 100%; border-radius: 14px 14px 0 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+  padding-top: .6em; font-size: 2.4em; background: rgba(255,255,255,.12); }
+body.display .podium-place { font-size: .5em; font-weight: 800; color: rgba(255,255,255,.8); }
+body.display .place-1 .podium-block { height: 62%; background: linear-gradient(#f5c84c, #c99512); }
+body.display .place-2 .podium-block { height: 46%; background: linear-gradient(#d9dde6, #9da4b3); }
+body.display .place-3 .podium-block { height: 34%; background: linear-gradient(#e2a46d, #a8653a); }
+body.display .podium-col:not(.shown) .podium-block { filter: grayscale(1) brightness(.55); }
+body.display .podium-col.fresh .podium-name, body.display .podium-col.fresh .podium-pts { animation: pop .7s cubic-bezier(.2,1.4,.4,1); }
+body.display .gold-text { color: var(--gold); font-weight: 800; }
+body.display .big-emoji { font-size: 5em; line-height: 1; margin-bottom: .2em; }
+body.display .festive-only { display: none; }
+body.display.festive .festive-only { display: block; }
+
+/* ---------- Festive theme (big screen) ---------- */
+.fx-layer { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
+.fx-top { z-index: 30; }
+body.display .stage { position: relative; z-index: 1; }
+.lights { display: none; }
+body.display.festive {
+  background: radial-gradient(ellipse at 50% -10%, #2a6b45 0%, #133d28 45%, #0b2618 100%);
+}
+body.display.festive h1, body.display.festive .question-text, body.display.festive .podium-name {
+  font-family: Georgia, "Times New Roman", serif; letter-spacing: .01em;
+}
+body.display.festive h2, body.display.festive .muted, body.display.festive .topbar { color: #f3dca2; }
+body.display.festive .topbar { padding-top: 2.2vh; }
+body.display.festive .pill { background: rgba(242,193,78,.18); color: #ffe7a8; }
+body.display.festive .team-card, body.display.festive .half-table .team-chip, body.display.festive .reveal-row.shown {
+  background: rgba(255,255,255,.08); border-color: rgba(242,193,78,.45);
+}
+body.display.festive .team-card { border: 1px solid rgba(242,193,78,.35); }
+body.display.festive .team-card .names { color: #e8efe6; }
+body.display.festive .half-table .divider { border-color: #f2c14e; }
+body.display.festive .timer-fill { background: #f2c14e; }
+body.display.festive .timer-track { background: rgba(255,255,255,.15); }
+body.display.festive .opt.correct { outline-color: #f2c14e; }
+body.display.festive .opt.correct::after { color: #1f8a4c; }
+body.display.festive .qr-box { box-shadow: 0 0 0 6px #b3202a, 0 0 0 12px #f2c14e; }
+body.display.festive .join-url { color: #fff; }
+body.display.festive .locked { color: #f3dca2; }
+body.display.festive .podium-pts { color: #f3dca2; }
+
+body.display.festive .lights { display: flex; justify-content: space-between; position: fixed; top: 0; left: 0; right: 0; z-index: 2;
+  padding: 0 1.5vw; height: 34px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent 6px, rgba(20,30,20,.9) 6px, rgba(20,30,20,.9) 8px, transparent 8px); }
+.lights .bulb { width: 12px; height: 18px; border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%; margin-top: 8px; position: relative;
+  animation: twinkle 3s ease-in-out infinite; }
+.lights .bulb::before { content: ""; position: absolute; top: -4px; left: 3px; width: 6px; height: 5px; background: #2a2f2a; border-radius: 2px; }
+.lights .b0 { background: #ff4d4d; box-shadow: 0 0 12px 3px rgba(255,77,77,.7); }
+.lights .b1 { background: #ffd34d; box-shadow: 0 0 12px 3px rgba(255,211,77,.7); }
+.lights .b2 { background: #4dff88; box-shadow: 0 0 12px 3px rgba(77,255,136,.6); }
+.lights .b3 { background: #4dc3ff; box-shadow: 0 0 12px 3px rgba(77,195,255,.6); }
+@keyframes twinkle { 0%, 100% { opacity: 1; } 50% { opacity: .35; box-shadow: none; } }
+@media (prefers-reduced-motion: reduce) { .lights .bulb { animation: none; } body.display .reveal-row.fresh, body.display .podium-col.fresh .podium-name { animation: none; } }
+
+/* ---------- Final reveal (phones) ---------- */
+.reveal-mini li.hiddenrow { color: var(--muted); }

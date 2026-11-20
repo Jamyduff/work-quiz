@@ -180,7 +180,7 @@
   function render() {
     if (queued) return;
     queued = true;
-    requestAnimationFrame(function () { queued = false; draw(); });
+    setTimeout(function () { queued = false; draw(); }, 16);
   }
 
   function draw() {
@@ -194,7 +194,7 @@
     var body = WQ.clear($("p-body"));
     var fn = {
       lobby: drawLobby, topics: drawTopics, roundIntro: drawRoundIntro, question: drawQuestion, closed: drawQuestion,
-      reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, end: drawEnd
+      reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, final: drawFinal
     }[s.phase] || drawLobby;
     fn(body, s);
     if (s.phase !== "question" && timer.stop) { timer.stop(); timer.stop = null; timer.qid = null; }
@@ -394,20 +394,32 @@
     ]));
   }
 
-  function drawEnd(body, s) {
+  function drawFinal(body, s) {
     var tq = g.results && g.results.q, pq = g.pscores && g.pscores.q;
-    var f = s.final || { teams: [], players: [] };
+    var counts = s.counts || { players: 0, teams: 0 };
+    var shown = s.shown || {}, sp = shown.players || {}, st = shown.teams || {};
+    var medal = { 1: "🥇", 2: "🥈", 3: "🥉" };
+    var allShown = Object.keys(sp).length >= counts.players && Object.keys(st).length >= counts.teams;
+    function list(title, n, map) {
+      var items = [];
+      for (var place = 1; place <= n; place++) {
+        var r = map["p" + place];
+        items.push(h("li", { class: r ? "" : "hiddenrow" }, [
+          h("strong", { style: { width: "2em" }, text: medal[place] || place + "." }),
+          h("span", { style: { flex: "1" }, text: r ? r.name : "?" }),
+          h("span", { text: r ? WQ.fmt(r.points) : "" })
+        ]));
+      }
+      return n ? [h("h3", { style: { marginTop: "16px" }, text: title }), h("ul", { class: "list reveal-mini" }, items)] : [];
+    }
     body.appendChild(h("div", { class: "card" }, [
-      h("h2", { text: "That's the end of the quiz!" }),
-      me.team ? h("div", { class: "score-grid" }, [
+      h("h2", { text: allShown ? "That's the end of the quiz!" : "Final results" }),
+      allShown ? null : h("p", { class: "muted", text: "Watch the big screen. The results are revealed one at a time, and your own scores appear here at the end." }),
+      me.team && allShown ? h("div", { class: "score-grid" }, [
         h("div", { class: "score-box" }, [h("div", { class: "label", text: "Your team" }), h("div", { class: "val", text: WQ.fmt(WQ.sumPoints(tq)) })]),
         h("div", { class: "score-box" }, [h("div", { class: "label", text: "You" }), h("div", { class: "val", text: WQ.fmt(WQ.sumPoints(pq)) })])
-      ]) : null,
-      h("h3", { style: { marginTop: "16px" }, text: "Final results" }),
-      h("ul", { class: "list" }, WQ.arr(f.teams).map(function (t, i) {
-        return h("li", null, [h("strong", { text: (i + 1) + "." }), h("span", { style: { flex: "1" }, text: t.name }), h("span", { text: WQ.fmt(t.points) })]);
-      }))
-    ]));
+      ]) : null
+    ].concat(list("Top players", counts.players, sp)).concat(list("Top teams", counts.teams, st))));
   }
 
   // ---------- Go ----------

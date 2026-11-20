@@ -198,7 +198,7 @@
     quiz.teams.forEach(function (name, i) { teams["t" + (i + 1)] = { name: name, order: i + 1 }; });
     var rounds = {};
     quiz.rounds.forEach(function (rd) { rounds["r" + rd.num] = { num: rd.num, topic: rd.topic, mode: rd.mode, count: rd.questions.length }; });
-    var meta = { hostUid: WQ.uid, created: L.serverTimestamp(), title: quiz.title, teams: teams, rounds: rounds, totalRounds: quiz.rounds.length };
+    var meta = { hostUid: WQ.uid, created: L.serverTimestamp(), title: quiz.title, teams: teams, rounds: rounds, totalRounds: quiz.rounds.length, theme: "festive" };
     L.set(L.ref(WQ.db, "games/" + code + "/meta"), meta)
       .then(function () { return L.set(L.ref(WQ.db, "games/" + code + "/state"), { phase: "lobby" }); })
       .then(function () {
@@ -227,6 +227,7 @@
 
     WQ.listen("meta", function (v) {
       game.meta = v;
+      if (v && document.activeElement !== $("g-theme")) $("g-theme").value = v.theme || "festive";
       if (v && v.hostUid !== WQ.uid) fatal(new Error("Game " + code + " was created on a different browser or computer, so it can't be controlled from here. Start a new game instead."));
       render();
     });
@@ -237,6 +238,12 @@
     WQ.listen("results", function (v) { game.results = v || {}; render(); });
     WQ.listen("pscores", function (v) { game.pscores = v || {}; render(); });
   }
+
+  $("g-theme").addEventListener("change", function () {
+    var p = {}; p["meta/theme"] = $("g-theme").value;
+    L.update(WQ.ref(""), p).catch(warn);
+    $("g-theme").blur();
+  });
 
   confirmClick($("g-new"), function () {
     WQ.store.del("wq-host");
@@ -428,12 +435,48 @@
     return L.set(WQ.ref("state"), { phase: "standings", round: s.round, totalRounds: quiz.rounds.length, standings: table });
   }
 
-  function finish() {
+  // ---------- Final reveal ----------
+  // The full order is worked out once and kept on this computer. Only names already revealed go online.
+  var MAX_PLAYERS = 5, MAX_TEAMS = 3;
+  function ordinal(n) { return n + (["th", "st", "nd", "rd"][(n % 100 > 10 && n % 100 < 14) ? 0 : (n % 10 < 4 ? n % 10 : 0)]); }
+  function buildFinalSequence() {
     var teams = activeTeams().map(function (tid) { return { name: teamName(tid), points: teamTotal(tid) }; })
-      .sort(function (a, b) { return b.points - a.points; });
+      .sort(function (a, b) { return b.points - a.points; }).slice(0, MAX_TEAMS);
     var players = Object.keys(game.players).map(function (uid) { return { name: playerName(uid), points: playerTotal(uid) }; })
-      .sort(function (a, b) { return b.points - a.points; }).slice(0, 5);
-    return L.set(WQ.ref("state"), { phase: "end", totalRounds: quiz.rounds.length, final: { teams: teams, players: players } });
+      .sort(function (a, b) { return b.points - a.points; }).slice(0, MAX_PLAYERS);
+    var seq = [], i;
+    for (i = players.length - 1; i >= 0; i--) seq.push({ kind: "players", place: i + 1, name: players[i].name, points: players[i].points });
+    for (i = teams.length - 1; i >= 0; i--) seq.push({ kind: "teams", place: i + 1, name: teams[i].name, points: teams[i].points });
+    return { seq: seq, players: players.length, teams: teams.length };
+  }
+  function finalSequence() {
+    var saved = WQ.store.get("wq-host") || {};
+    if (saved.code === WQ.code && saved.finalSeq) return saved.finalSeq;
+    var built = buildFinalSequence();
+    saved.finalSeq = built;
+    WQ.store.set("wq-host", saved);
+    return built;
+  }
+  function finish() {
+    var saved = WQ.store.get("wq-host") || {};
+    delete saved.finalSeq;
+    WQ.store.set("wq-host", saved);
+    var f = finalSequence();
+    return L.set(WQ.ref("state"), { phase: "final", totalRounds: quiz.rounds.length, step: 0,
+      counts: { players: f.players, teams: f.teams } });
+  }
+  function revealNext() {
+    var s = game.state, f = finalSequence(), item = f.seq[s.step || 0];
+    if (!item) return;
+    var upd = {};
+    upd["state/step"] = (s.step || 0) + 1;
+    upd["state/last"] = { kind: item.kind, place: item.place };
+    upd["state/shown/" + item.kind + "/p" + item.place] = { place: item.place, name: item.name, points: item.points };
+    return L.update(WQ.ref(""), upd);
+  }
+  function finalLabel(item) {
+    return "Reveal " + ordinal(item.place) + " place " + (item.kind === "players" ? "player" : "team") +
+      (item.place === 1 ? (item.kind === "teams" ? " 🏆" : " ⭐") : "");
   }
 
   function nextStep() {
@@ -453,7 +496,11 @@
         if (s.round < total) return { label: "Start round " + (s.round + 1), run: function () { return roundIntro(s.round + 1); } };
         return { label: "Finish the quiz", run: finish };
       case "standings": return { label: "Start round " + (s.round + 1), run: function () { return roundIntro(s.round + 1); } };
-      case "end": return { label: "Quiz finished", disabled: true };
+      case "final":
+        var f = finalSequence(), item = f.seq[s.step || 0];
+        if (!s.step) return { label: "Start the reveal: " + (f.players ? ordinal(f.players) + " place player" : ordinal(f.teams) + " place team"), run: revealNext };
+        if (item) return { label: finalLabel(item), run: revealNext };
+        return { label: "Quiz finished 🎉", disabled: true };
     }
     return { label: "…", disabled: true };
   }
@@ -557,7 +604,7 @@
   function render() {
     if (renderQueued) return;
     renderQueued = true;
-    requestAnimationFrame(function () { renderQueued = false; renderTeams(); renderControl(); renderScores(); });
+    setTimeout(function () { renderQueued = false; renderTeams(); renderControl(); renderScores(); }, 16);
   }
 
   var teamsRenderPending = false;
@@ -633,7 +680,7 @@
       reveal: "Answer revealed",
       roundEnd: "End of round " + s.round,
       standings: "Standings after round " + s.round,
-      end: "Quiz finished"
+      final: "Final results"
     }[s.phase] || s.phase;
     $("c-phase").textContent = phaseText;
     var where = "";
@@ -658,6 +705,15 @@
           var isAns = WQ.LETTERS[i] === q.answer;
           return h("div", { style: isAns ? { fontWeight: "800", color: "var(--ok)" } : null, text: WQ.LETTERS[i] + ". " + o + (isAns ? "  ✓ answer" : "") });
         }))
+      ]));
+    }
+
+    if (s.phase === "final") {
+      var fs = finalSequence(), nextItem = fs.seq[s.step || 0];
+      qbox.appendChild(h("div", { class: "card", style: { background: "#f6f7fb", marginTop: "10px" } }, [
+        h("div", { class: "muted small", text: "Revealed " + (s.step || 0) + " of " + fs.seq.length + (nextItem ? " · up next (only you can see this):" : "") }),
+        nextItem ? h("div", { style: { fontWeight: "700", fontSize: "1.1rem", marginTop: "4px" },
+          text: ordinal(nextItem.place) + " place " + (nextItem.kind === "players" ? "player" : "team") + ": " + nextItem.name + " (" + WQ.fmt(nextItem.points) + ")" }) : h("div", { text: "Everything has been revealed." })
       ]));
     }
 

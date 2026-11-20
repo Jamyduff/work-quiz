@@ -25,6 +25,7 @@
     WQ.listen("meta", function (v) {
       g.meta = v;
       if (!v) return message("There's no game with the code " + code + ".");
+      setTheme(v.theme || "festive");
       render();
     });
     WQ.listen("state", function (v) { g.state = v || { phase: "lobby" }; render(); });
@@ -36,7 +37,7 @@
   function render() {
     if (queued) return;
     queued = true;
-    requestAnimationFrame(function () { queued = false; draw(); });
+    setTimeout(function () { queued = false; draw(); }, 16);
   }
 
   function teamIds() {
@@ -58,11 +59,11 @@
     if (!g.meta || !g.state) return;
     var s = g.state;
     $("d-top-left").textContent = g.meta.title || "Work Quiz";
-    $("d-top-right").textContent = s.round && s.phase !== "end" ? "Round " + s.round + " of " + (s.totalRounds || g.meta.totalRounds) : "Game " + WQ.code;
+    $("d-top-right").textContent = s.phase === "final" ? "Final results" : s.round ? "Round " + s.round + " of " + (s.totalRounds || g.meta.totalRounds) : "Game " + WQ.code;
     var main = WQ.clear($("d-main"));
     var fn = {
       lobby: drawLobby, topics: drawTopics, roundIntro: drawRoundIntro, question: drawQuestion, closed: drawQuestion,
-      reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, end: drawEnd
+      reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, final: drawFinal
     }[s.phase] || drawLobby;
     fn(main, s);
     if (s.phase !== "question" && timer.stop) { timer.stop(); timer.stop = null; timer.qid = null; }
@@ -158,23 +159,150 @@
     ]));
   }
 
-  function drawEnd(main, s) {
-    var f = s.final || { teams: [], players: [] };
-    main.appendChild(h("h1", { class: "center", text: "Final results" }));
-    main.appendChild(h("div", { style: { display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: "4vw", marginTop: "2vh" } }, [
+  // ---------- Final reveal ----------
+  var MEDAL = { 1: "🥇", 2: "🥈", 3: "🥉" };
+  function ordinal(n) { return n + (["th", "st", "nd", "rd"][(n % 100 > 10 && n % 100 < 14) ? 0 : (n % 10 < 4 ? n % 10 : 0)]); }
+  var celebrated = null;
+
+  function drawFinal(main, s) {
+    var counts = s.counts || { players: 0, teams: 0 };
+    var shown = s.shown || {};
+    var sp = shown.players || {}, st = shown.teams || {};
+    var nT = Object.keys(st).length, nP = Object.keys(sp).length;
+    var last = s.last || {};
+
+    if (!nP && !nT) {
+      main.appendChild(h("div", { class: "center" }, [
+        h("div", { class: "festive-only big-emoji", text: "🎄" }),
+        h("h1", { style: { fontSize: "4.2em" }, text: "Final results" }),
+        h("h2", { class: "muted", text: "Time to find out who's top of the nice list…" })
+      ]));
+      return;
+    }
+
+    function playerRows(compact) {
+      var rows = [];
+      for (var place = 1; place <= counts.players; place++) {
+        var r = sp["p" + place];
+        var fresh = r && last.kind === "players" && last.place === place;
+        rows.push(h("div", { class: "reveal-row" + (r ? " shown" : "") + (fresh ? " fresh" : "") + (place === 1 && r ? " winner" : "") }, [
+          h("span", { class: "place", text: MEDAL[place] || ordinal(place) }),
+          h("span", { class: "who", text: r ? r.name : "?" }),
+          h("span", { class: "pts", text: r ? WQ.fmt(r.points) : "" })
+        ]));
+      }
+      return h("div", { class: "reveal-list" + (compact ? " compact" : "") }, rows);
+    }
+
+    if (!nT) {
+      main.appendChild(h("h1", { class: "center", text: "Top players" }));
+      main.appendChild(playerRows(false));
+      if (sp.p1 && last.kind === "players" && last.place === 1) {
+        main.appendChild(h("p", { class: "center gold-text", style: { fontSize: "1.4em", marginTop: "2vh" }, text: "⭐ Top player: " + sp.p1.name + "! ⭐" }));
+      }
+      return;
+    }
+
+    // Team podium: 2nd, 1st, 3rd from left to right
+    var order = [2, 1, 3].filter(function (p) { return p <= counts.teams; });
+    var podium = h("div", { class: "podium" }, order.map(function (place) {
+      var r = st["p" + place];
+      var fresh = r && last.kind === "teams" && last.place === place;
+      return h("div", { class: "podium-col place-" + place + (r ? " shown" : "") + (fresh ? " fresh" : "") }, [
+        h("div", { class: "podium-name", text: r ? r.name : "?" }),
+        h("div", { class: "podium-pts", text: r ? WQ.fmt(r.points) + " pts" : "" }),
+        h("div", { class: "podium-block" }, [h("span", { text: MEDAL[place] }), h("span", { class: "podium-place", text: ordinal(place) })])
+      ]);
+    }));
+    var winner = st.p1;
+    main.appendChild(h("div", { class: "final-grid" }, [
       h("div", null, [
-        h("h2", { text: "Teams" }),
-        h("table", { class: "final-table" }, WQ.arr(f.teams).map(function (t, i) {
-          return h("tr", null, [h("td", { text: (i + 1) + ". " + t.name + (i === 0 ? "  🏆" : "") }), h("td", { class: "num", text: WQ.fmt(t.points) })]);
-        }))
+        h("h1", { class: "center", text: winner ? "🏆 " + winner.name + " win!" : "Team results" }),
+        podium
       ]),
-      h("div", null, [
-        h("h2", { text: "Top 5 players" }),
-        h("table", { class: "final-table" }, WQ.arr(f.players).map(function (p, i) {
-          return h("tr", null, [h("td", { text: (i + 1) + ". " + p.name }), h("td", { class: "num", text: WQ.fmt(p.points) })]);
-        }))
-      ])
+      counts.players ? h("div", null, [h("h2", { text: "Top players" }), playerRows(true)]) : null
     ]));
+    if (winner && celebrated !== WQ.code) {
+      celebrated = WQ.code;
+      confetti();
+    }
+  }
+
+  // ---------- Festive theme: fairy lights, snow and confetti ----------
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var snowOn = false, snowFlakes = [], snowRaf = null;
+
+  function setTheme(theme) {
+    var festive = theme !== "plain";
+    document.body.classList.toggle("festive", festive);
+    var lights = $("d-lights");
+    if (festive && !lights.firstChild) {
+      for (var i = 0; i < 36; i++) lights.appendChild(h("span", { class: "bulb b" + (i % 4), style: { animationDelay: (i * 0.37 % 3).toFixed(2) + "s" } }));
+    }
+    if (festive && !snowOn) startSnow();
+    if (!festive && snowOn) stopSnow();
+  }
+
+  function sizeCanvas(c) {
+    var dpr = window.devicePixelRatio || 1;
+    c.width = innerWidth * dpr; c.height = innerHeight * dpr;
+    c.style.width = innerWidth + "px"; c.style.height = innerHeight + "px";
+    c.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function startSnow() {
+    var c = $("d-snow"), ctx = c.getContext("2d");
+    snowOn = true;
+    sizeCanvas(c);
+    var n = reduceMotion ? 25 : 90;
+    snowFlakes = [];
+    for (var i = 0; i < n; i++) snowFlakes.push({ x: Math.random() * innerWidth, y: Math.random() * innerHeight,
+      r: 1 + Math.random() * 3, vy: 0.3 + Math.random() * 0.9, sway: Math.random() * 6.28, a: 0.35 + Math.random() * 0.5 });
+    function frame() {
+      if (!snowOn) return;
+      ctx.clearRect(0, 0, innerWidth, innerHeight);
+      snowFlakes.forEach(function (f) {
+        f.y += reduceMotion ? f.vy * 0.3 : f.vy;
+        f.sway += 0.01;
+        f.x += Math.sin(f.sway) * 0.4;
+        if (f.y > innerHeight + 5) { f.y = -5; f.x = Math.random() * innerWidth; }
+        ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 6.283);
+        ctx.fillStyle = "rgba(255,255,255," + f.a + ")"; ctx.fill();
+      });
+      snowRaf = requestAnimationFrame(frame);
+    }
+    frame();
+  }
+  function stopSnow() {
+    snowOn = false;
+    if (snowRaf) cancelAnimationFrame(snowRaf);
+    var c = $("d-snow"); c.getContext("2d").clearRect(0, 0, c.width, c.height);
+  }
+  window.addEventListener("resize", function () { if (snowOn) sizeCanvas($("d-snow")); });
+
+  function confetti() {
+    var c = $("d-confetti"), ctx = c.getContext("2d");
+    sizeCanvas(c);
+    var colours = ["#f2c14e", "#d6453d", "#2c9a55", "#ffffff", "#2f6fd6"];
+    var parts = [];
+    for (var i = 0; i < (reduceMotion ? 60 : 220); i++) {
+      parts.push({ x: innerWidth / 2 + (Math.random() - 0.5) * innerWidth * 0.3, y: innerHeight * 0.35,
+        vx: (Math.random() - 0.5) * 14, vy: -6 - Math.random() * 10, w: 6 + Math.random() * 6, h: 8 + Math.random() * 8,
+        rot: Math.random() * 6.28, vr: (Math.random() - 0.5) * 0.3, col: colours[i % colours.length] });
+    }
+    var start = performance.now();
+    function frame(t) {
+      var age = t - start;
+      ctx.clearRect(0, 0, innerWidth, innerHeight);
+      parts.forEach(function (p) {
+        p.vy += 0.25; p.vx *= 0.99; p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+        ctx.globalAlpha = Math.max(0, 1 - age / 6500);
+        ctx.fillStyle = p.col; ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); ctx.restore();
+      });
+      if (age < 6500) requestAnimationFrame(frame); else ctx.clearRect(0, 0, innerWidth, innerHeight);
+    }
+    requestAnimationFrame(frame);
   }
 
   WQ.init().then(start).catch(function (e) { message((e && e.message) || String(e)); });

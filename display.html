@@ -8,6 +8,8 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body class="display">
+<canvas id="d-snow" class="fx-layer" aria-hidden="true"></canvas>
+<div class="lights" id="d-lights" aria-hidden="true"></div>
 <div class="stage">
   <div class="topbar">
     <span id="d-top-left">Work Quiz</span>
@@ -17,6 +19,7 @@
     <p class="muted">Connecting…</p>
   </div>
 </div>
+<canvas id="d-confetti" class="fx-layer fx-top" aria-hidden="true"></canvas>
 <button class="btn" id="d-full" style="position:fixed; right:16px; bottom:16px; opacity:.7">Full screen</button>
 
 <script src="firebase-config.js"></script>
