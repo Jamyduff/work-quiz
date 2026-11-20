@@ -1,0 +1,10 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "nettest": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}

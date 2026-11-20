@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Work Quiz – Network test</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --ink: #1d2433; --muted: #5b6475; --line: #e3e6ec;
+    --ok: #1f8a4c; --ok-bg: #e7f6ed; --warn: #a15c00; --warn-bg: #fff3e0;
+    --fail: #c0362c; --fail-bg: #fdeceb; --accent: #3b4cca;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 680px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 4px 0 6px; }
+  h2 { font-size: 1.05rem; margin: 0 0 12px; }
+  h3 { font-size: .95rem; margin: 18px 0 8px; color: var(--muted); font-weight: 600; }
+  p { margin: 0 0 12px; }
+  .lead { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-top: 14px; }
+  .banner { border-radius: 12px; padding: 14px 16px; margin-top: 16px; font-weight: 600; }
+  .banner.pending { background: #eef0f4; color: var(--muted); }
+  .banner.ok { background: var(--ok-bg); color: var(--ok); }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); }
+  .banner.fail { background: var(--fail-bg); color: var(--fail); }
+  .checks { list-style: none; margin: 0; padding: 0; }
+  .checks li { display: grid; grid-template-columns: 28px 1fr; column-gap: 8px;
+    padding: 8px 0; border-top: 1px solid var(--line); }
+  .checks li:first-child { border-top: 0; }
+  .checks .icon { grid-row: span 2; width: 24px; height: 24px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; font-weight: 700;
+    font-size: .85rem; background: #eef0f4; color: var(--muted); }
+  .checks .icon::before { content: "○"; }
+  .checks li.pending .icon::before { content: "…"; }
+  .checks li.ok .icon { background: var(--ok-bg); color: var(--ok); }
+  .checks li.ok .icon::before { content: "✓"; }
+  .checks li.warn .icon { background: var(--warn-bg); color: var(--warn); }
+  .checks li.warn .icon::before { content: "!"; }
+  .checks li.fail .icon { background: var(--fail-bg); color: var(--fail); }
+  .checks li.fail .icon::before { content: "✕"; }
+  .checks .detail { color: var(--muted); font-size: .9rem; }
+  .checks li.fail .detail { color: var(--fail); }
+  label { display: block; font-weight: 600; margin-bottom: 12px; }
+  input { display: block; width: 100%; margin-top: 6px; padding: 10px 12px; font: inherit;
+    border: 1px solid var(--line); border-radius: 8px; }
+  button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line);
+    background: #fff; padding: 10px 14px; }
+  button.big { display: block; width: 100%; padding: 22px; font-size: 1.6rem; font-weight: 800;
+    letter-spacing: .08em; background: var(--accent); color: #fff; border: 0; }
+  button.big:active { transform: scale(.98); }
+  button:disabled { opacity: .5; cursor: default; }
+  ul.list { list-style: none; margin: 0; padding: 0; }
+  ul.list li { padding: 7px 0; border-top: 1px solid var(--line); display: flex;
+    justify-content: space-between; gap: 12px; }
+  ul.list li:first-child { border-top: 0; }
+  ul.list .sub { color: var(--muted); font-size: .9rem; white-space: nowrap; }
+  ul.list li.empty { color: var(--muted); }
+  ul.list li.fresh { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { background: #fff6c2; } to { background: transparent; } }
+  #qr { display: flex; justify-content: center; margin: 4px 0 10px; }
+  #qr svg { width: 220px; height: 220px; }
+  .url { text-align: center; word-break: break-all; font-size: .9rem; color: var(--muted); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .small { font-size: .9rem; color: var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Work Quiz · Network test</h1>
+  <p class="lead">Open this page on a work laptop and on phones using the work Wi-Fi.
+    If every check goes green and taps show up on the other devices, the quiz will work here.</p>
+
+  <div id="banner" class="banner pending">Running checks…</div>
+
+  <section class="card">
+    <h2>Checks on this device</h2>
+    <ul class="checks">
+      <li id="c-page"><span class="icon"></span><span class="label">Website loaded</span><span class="detail"></span></li>
+      <li id="c-lib"><span class="icon"></span><span class="label">Quiz engine loaded</span><span class="detail"></span></li>
+      <li id="c-config"><span class="icon"></span><span class="label">Firebase settings filled in</span><span class="detail"></span></li>
+      <li id="c-conn"><span class="icon"></span><span class="label">Connected to the live database</span><span class="detail"></span></li>
+      <li id="c-speed"><span class="icon"></span><span class="label">Response time</span><span class="detail"></span></li>
+    </ul>
+  </section>
+
+  <section class="card" id="live" hidden>
+    <h2>Live test</h2>
+    <p>Press TAP on one device and watch it appear on the others.</p>
+    <label>Your name
+      <input id="name" maxlength="24" autocomplete="off">
+    </label>
+    <button id="tap" class="big">TAP</button>
+    <h3>Devices on this page right now (<span id="count">0</span>)</h3>
+    <ul class="list" id="devices"><li class="empty">Waiting…</li></ul>
+    <h3>Recent taps</h3>
+    <ul class="list" id="taps"><li class="empty">No taps yet</li></ul>
+  </section>
+
+  <section class="card" id="share">
+    <h2>Join from a phone</h2>
+    <p>Turn mobile data off first so the phone uses the work Wi-Fi, then scan this with the phone's camera.</p>
+    <div id="qr"></div>
+    <p class="url" id="url"></p>
+  </section>
+
+  <section class="card">
+    <h2>Send results</h2>
+    <p class="small">If anything is red or amber, copy the results and paste them into your chat with Claude.</p>
+    <div class="row">
+      <button id="copy">Copy results</button>
+      <span id="copied" class="small" hidden>Copied</span>
+    </div>
+    <p class="small" id="device" style="margin-top:12px"></p>
+  </section>
+</main>
+
+<script src="firebase-config.js"></script>
+<script src="quiz-lib.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var checks = {};       // id -> {state, detail}
+  var labels = {
+    "c-page": "Website loaded", "c-lib": "Quiz engine loaded",
+    "c-config": "Firebase settings filled in", "c-conn": "Connected to the live database",
+    "c-speed": "Response time"
+  };
+
+  function setCheck(id, state, detail) {
+    checks[id] = { state: state, detail: detail || "" };
+    var li = $(id);
+    li.className = state;
+    li.querySelector(".detail").textContent = detail || "";
+    updateBanner();
+  }
+
+  var bannerOverride = null;
+  function updateBanner() {
+    var b = $("banner");
+    var ids = Object.keys(labels);
+    var states = ids.map(function (id) { return checks[id] ? checks[id].state : "todo"; });
+    var cls, text;
+    if (bannerOverride) { cls = bannerOverride.cls; text = bannerOverride.text; }
+    else if (states.indexOf("fail") >= 0) {
+      cls = "fail"; text = "Something isn't working on this device. See the red line below.";
+    } else if (states.every(function (s) { return s === "ok"; })) {
+      cls = "ok"; text = "✓ Everything works on this device. Now try the live test with another device.";
+    } else if (states.every(function (s) { return s === "ok" || s === "warn"; })) {
+      cls = "warn"; text = "This device works, but see the amber line below.";
+    } else { cls = "pending"; text = "Running checks…"; }
+    b.className = "banner " + cls;
+    b.textContent = text;
+  }
+
+  function store(key, value) {
+    try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); }
+    catch (e) { return null; }
+  }
+
+  // ---------- Device details ----------
+  function guessDevice() {
+    var ua = navigator.userAgent;
+    if (/iPhone/.test(ua)) return "iPhone";
+    if (/iPad/.test(ua)) return "iPad";
+    if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android phone" : "Android tablet";
+    if (/CrOS/.test(ua)) return "Chromebook";
+    if (/Windows/.test(ua)) return "Windows laptop";
+    if (/Macintosh/.test(ua)) return navigator.maxTouchPoints > 1 ? "iPad" : "Mac";
+    if (/Linux/.test(ua)) return "Linux computer";
+    return "Device";
+  }
+  function guessBrowser() {
+    var ua = navigator.userAgent;
+    if (/Edg\//.test(ua)) return "Edge";
+    if (/SamsungBrowser/.test(ua)) return "Samsung Internet";
+    if (/Firefox|FxiOS/.test(ua)) return "Firefox";
+    if (/Chrome|CriOS/.test(ua)) return "Chrome";
+    if (/Safari/.test(ua)) return "Safari";
+    return "Browser";
+  }
+  var deviceType = guessDevice();
+  var browser = guessBrowser();
+  $("device").textContent = "This device: " + deviceType + ", " + browser + ".";
+
+  // ---------- Page + QR ----------
+  var pageUrl = location.href.split("#")[0].split("?")[0];
+  var online = /^https?:/.test(location.protocol);
+  setCheck("c-page", "ok", online ? location.host : "Opened from a file on this computer");
+  $("url").textContent = online ? pageUrl : "The QR code appears once this page is on GitHub Pages.";
+
+  function drawQr() {
+    if (!online || !window.QuizLib || !window.QuizLib.qrcode) return;
+    try {
+      var qr = window.QuizLib.qrcode(0, "M");
+      qr.addData(pageUrl);
+      qr.make();
+      $("qr").innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true });
+    } catch (e) { $("qr").textContent = "Couldn't draw the QR code."; }
+  }
+
+  // ---------- Copy results ----------
+  $("copy").addEventListener("click", function () {
+    var lines = ["Work Quiz network test", new Date().toString(), "Page: " + pageUrl,
+      "Device: " + deviceType + ", " + browser, "User agent: " + navigator.userAgent, ""];
+    Object.keys(labels).forEach(function (id) {
+      var c = checks[id] || { state: "not run", detail: "" };
+      lines.push(labels[id] + ": " + c.state.toUpperCase() + (c.detail ? " – " + c.detail : ""));
+    });
+    if (lastError) lines.push("", "Last error: " + lastError);
+    var text = lines.join("\n");
+    function done() { $("copied").hidden = false; setTimeout(function () { $("copied").hidden = true; }, 2000); }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
+    } else { fallbackCopy(text); done(); }
+  });
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+
+  var lastError = "";
+  function explain(e) {
+    var msg = (e && (e.code || e.message)) || String(e);
+    lastError = (e && e.message) || msg;
+    if (/permission/i.test(msg)) return "Permission denied. The database rules from setup step 3 aren't in place yet.";
+    return msg;
+  }
+
+  // ---------- Library ----------
+  if (!window.QuizLib) {
+    setCheck("c-lib", "fail", "quiz-lib.js didn't load. Check it was uploaded with the other files.");
+    return stop();
+  }
+  setCheck("c-lib", "ok", "");
+  drawQr();
+
+  // ---------- Config ----------
+  var cfg = window.FIREBASE_CONFIG;
+  function filled(v) { return typeof v === "string" && v.length > 0 && v.indexOf("PASTE") !== 0; }
+  if (!cfg) {
+    setCheck("c-config", "fail", "firebase-config.js is missing or didn't load.");
+    return stop();
+  }
+  if (!filled(cfg.apiKey) || !filled(cfg.projectId) || !filled(cfg.databaseURL)) {
+    setCheck("c-config", "fail", "The Firebase settings haven't been filled in yet.");
+    return stop();
+  }
+  setCheck("c-config", "ok", cfg.projectId);
+
+  function stop() {
+    ["c-lib", "c-config", "c-conn", "c-speed"].forEach(function (id) {
+      if (!checks[id]) setCheck(id, "todo", "Not run");
+    });
+    if (window.QuizLib) drawQr();
+  }
+
+  // ---------- Connect ----------
+  var L = window.QuizLib, db;
+  try {
+    var app = L.initializeApp(cfg);
+    db = L.getDatabase(app);
+  } catch (e) {
+    setCheck("c-conn", "fail", "Couldn't start: " + explain(e) + " (check the database address in firebase-config.js).");
+    return stop();
+  }
+
+  var myId = Math.random().toString(36).slice(2, 10);
+  var serverOffset = 0;
+  var connected = false, everConnected = false, liveStarted = false;
+  var t0 = performance.now();
+  setCheck("c-conn", "pending", "Connecting…");
+  setCheck("c-speed", "pending", "Waiting for connection…");
+
+  var connTimer = setTimeout(function () {
+    if (!everConnected) {
+      setCheck("c-conn", "fail", "No connection after 15 seconds. The network may be blocking the live connection.");
+      setCheck("c-speed", "todo", "Not run");
+    }
+  }, 15000);
+
+  L.onValue(L.ref(db, ".info/serverTimeOffset"), function (snap) { serverOffset = snap.val() || 0; });
+
+  var presRef = L.ref(db, "nettest/presence/" + myId);
+
+  L.onValue(L.ref(db, ".info/connected"), function (snap) {
+    if (snap.val() === true) {
+      connected = true;
+      if (!everConnected) {
+        everConnected = true;
+        clearTimeout(connTimer);
+        setCheck("c-conn", "ok", "Connected in " + Math.round(performance.now() - t0) + " ms");
+        runSpeedTest();
+      } else {
+        setCheck("c-conn", "ok", "Reconnected");
+      }
+      // Re-register presence every time we (re)connect.
+      L.onDisconnect(presRef).remove().then(writePresence).catch(function (e) {
+        setCheck("c-conn", "fail", explain(e));
+      });
+    } else if (everConnected && connected) {
+      connected = false;
+      setCheck("c-conn", "warn", "Connection dropped – trying again…");
+    }
+  });
+
+  // ---------- Speed ----------
+  function runSpeedTest() {
+    setCheck("c-speed", "pending", "Measuring…");
+    var pingRef = L.ref(db, "nettest/ping/" + myId);
+    var times = [], i = 0;
+    function next() {
+      if (i >= 5) {
+        L.remove(pingRef).catch(function () {});
+        times.sort(function (a, b) { return a - b; });
+        var med = Math.round(times[2]);
+        if (med < 400) setCheck("c-speed", "ok", med + " ms – fast");
+        else if (med < 1000) setCheck("c-speed", "warn", med + " ms – a little slow, but the quiz will work");
+        else setCheck("c-speed", "warn", med + " ms – slow, so answers may lag");
+        startLive();
+        return;
+      }
+      var s = performance.now();
+      L.set(pingRef, { n: i, at: L.serverTimestamp() }).then(function () {
+        times.push(performance.now() - s); i++; next();
+      }).catch(function (e) {
+        setCheck("c-speed", "fail", explain(e));
+      });
+    }
+    next();
+  }
+
+  // ---------- Live test ----------
+  var nameInput = $("name");
+  nameInput.value = store("wq-nettest-name") || deviceType;
+
+  function myName() { return (nameInput.value || "").trim().slice(0, 24) || deviceType; }
+
+  function writePresence() {
+    return L.set(presRef, { name: myName(), device: deviceType, browser: browser, joined: L.serverTimestamp() })
+      .catch(function (e) { setCheck("c-conn", "fail", explain(e)); });
+  }
+
+  nameInput.addEventListener("change", function () {
+    store("wq-nettest-name", myName());
+    if (connected) writePresence();
+  });
+
+  function startLive() {
+    if (liveStarted) return;
+    liveStarted = true;
+    $("live").hidden = false;
+
+    L.onValue(L.ref(db, "nettest/presence"), function (snap) {
+      var list = [];
+      snap.forEach(function (child) { var v = child.val() || {}; v.id = child.key; list.push(v); });
+      list.sort(function (a, b) { return (a.joined || 0) - (b.joined || 0); });
+      $("count").textContent = list.length;
+      var ul = $("devices");
+      ul.innerHTML = "";
+      if (!list.length) { ul.innerHTML = '<li class="empty">Nobody yet</li>'; return; }
+      list.forEach(function (d) {
+        var li = document.createElement("li");
+        var left = document.createElement("span");
+        left.textContent = (d.name || "Someone") + (d.id === myId ? " (you)" : "");
+        var right = document.createElement("span");
+        right.className = "sub";
+        right.textContent = [d.device, d.browser].filter(Boolean).join(", ");
+        li.appendChild(left); li.appendChild(right);
+        ul.appendChild(li);
+      });
+    });
+
+    var seen = {}, firstLoad = true;
+    L.onValue(L.query(L.ref(db, "nettest/taps"), L.limitToLast(8)), function (snap) {
+      var items = [];
+      snap.forEach(function (child) { var v = child.val() || {}; v.key = child.key; items.push(v); });
+      items.reverse();
+      var ul = $("taps");
+      ul.innerHTML = "";
+      if (!items.length) { ul.innerHTML = '<li class="empty">No taps yet</li>'; }
+      var nowServer = Date.now() + serverOffset;
+      items.forEach(function (t) {
+        if (!(t.key in seen)) {
+          seen[t.key] = firstLoad ? null : (t.by === myId ? "you" : Math.max(0, Math.round(nowServer - (t.at || nowServer))));
+        }
+        var li = document.createElement("li");
+        var left = document.createElement("span");
+        left.textContent = (t.name || "Someone") + " tapped";
+        var right = document.createElement("span");
+        right.className = "sub";
+        var s = seen[t.key];
+        right.textContent = s === null ? "earlier" : s === "you" ? "from this device" : "arrived after ~" + s + " ms";
+        li.appendChild(left); li.appendChild(right);
+        ul.appendChild(li);
+      });
+      // Flash the newest item if it arrived just now.
+      if (!firstLoad && ul.firstChild && items.length) ul.firstChild.classList.add("fresh");
+      firstLoad = false;
+    });
+
+    $("tap").addEventListener("click", function () {
+      var btn = $("tap");
+      btn.disabled = true;
+      L.push(L.ref(db, "nettest/taps"), { name: myName(), device: deviceType, by: myId, at: L.serverTimestamp() })
+        .catch(function (e) { setCheck("c-conn", "fail", explain(e)); })
+        .then(function () { setTimeout(function () { btn.disabled = false; }, 400); });
+    });
+  }
+})();
+</script>
+</body>
+</html>
