@@ -84,6 +84,7 @@
       <li id="c-config"><span class="icon"></span><span class="label">Firebase settings filled in</span><span class="detail"></span></li>
       <li id="c-conn"><span class="icon"></span><span class="label">Connected to the live database</span><span class="detail"></span></li>
       <li id="c-speed"><span class="icon"></span><span class="label">Response time</span><span class="detail"></span></li>
+      <li id="c-pic"><span class="icon"></span><span class="label">Picture download</span><span class="detail"></span></li>
     </ul>
   </section>
 
@@ -129,7 +130,7 @@
   var labels = {
     "c-page": "Website loaded", "c-lib": "Quiz engine loaded",
     "c-config": "Firebase settings filled in", "c-conn": "Connected to the live database",
-    "c-speed": "Response time"
+    "c-speed": "Response time", "c-pic": "Picture download"
   };
 
   function setCheck(id, state, detail) {
@@ -256,7 +257,7 @@
   setCheck("c-config", "ok", cfg.projectId);
 
   function stop() {
-    ["c-lib", "c-config", "c-conn", "c-speed"].forEach(function (id) {
+    ["c-lib", "c-config", "c-conn", "c-speed", "c-pic"].forEach(function (id) {
       if (!checks[id]) setCheck(id, "todo", "Not run");
     });
     if (window.QuizLib) drawQr();
@@ -324,6 +325,7 @@
         if (med < 400) setCheck("c-speed", "ok", med + " ms – fast");
         else if (med < 1000) setCheck("c-speed", "warn", med + " ms – a little slow, but the quiz will work");
         else setCheck("c-speed", "warn", med + " ms – slow, so answers may lag");
+        runPicTest();
         startLive();
         return;
       }
@@ -335,6 +337,31 @@
       });
     }
     next();
+  }
+
+  // ---------- Picture download ----------
+  // Quiz pictures are sent through the database, about 200 KB each. This times a download of that size.
+  function runPicTest() {
+    setCheck("c-pic", "pending", "Downloading a test picture…");
+    var picRef = L.ref(db, "nettest/pic");
+    var t;
+    L.get(picRef).then(function (snap) {
+      var v = snap.val();
+      if (v && typeof v.data === "string" && v.data.length >= 250000) return;
+      var abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", s = [];
+      for (var i = 0; i < 270000; i++) s.push(abc.charAt(Math.floor(Math.random() * 64)));
+      return L.set(picRef, { data: s.join(""), at: L.serverTimestamp() });
+    }).then(function () {
+      t = performance.now();
+      return L.get(picRef);
+    }).then(function (snap) {
+      var v = snap.val(), secs = (performance.now() - t) / 1000;
+      if (!v || typeof v.data !== "string") return setCheck("c-pic", "fail", "The test picture didn't arrive.");
+      var txt = secs.toFixed(1) + " s for a picture-sized download";
+      if (secs < 2) setCheck("c-pic", "ok", txt + " – fine");
+      else if (secs < 5) setCheck("c-pic", "warn", txt + " – pictures will take a few seconds to appear");
+      else setCheck("c-pic", "warn", txt + " – slow, so pictures may still be loading when a question starts");
+    }).catch(function (e) { setCheck("c-pic", "fail", explain(e)); });
   }
 
   // ---------- Live test ----------
