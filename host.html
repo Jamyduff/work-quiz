@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>Work Quiz – Quiz master</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=2.1">
 </head>
 <body class="host">
 <div class="wrap">
@@ -14,6 +14,7 @@
   <section id="s-start" data-screen hidden>
     <h1>Work Quiz · Quiz master</h1>
     <p class="muted">This screen is for you only. Keep it off the big screen, because it shows the answers.</p>
+    <p class="muted small" id="version"></p>
 
     <div class="card" id="resume-box" hidden>
       <h2>Carry on with game <span id="resume-code"></span></h2>
@@ -30,10 +31,24 @@
       <div class="row">
         <label class="btn btn-primary btn-big" for="file">Choose quiz file…</label>
         <input type="file" id="file" accept=".xlsx,.xls" hidden>
+        <input type="file" id="pics-folder" webkitdirectory multiple hidden>
+        <input type="file" id="pics-files" accept="image/*,.svg" multiple hidden>
         <span class="muted">or</span>
         <button class="btn btn-big" id="use-sample">Try the sample quiz</button>
       </div>
     </div>
+
+    <details class="card" id="spot-card">
+      <summary style="cursor:pointer; font-weight:700; font-size:1.1rem">Find the spot on a picture (for writing pin questions)</summary>
+      <p class="muted small" style="margin-top:10px">Choose a picture, then click the right spot. Copy the two numbers into the Target X % and Target Y % columns of your quiz file. Use + to zoom in for accuracy.</p>
+      <div class="row">
+        <label class="btn" for="spot-file">Choose a picture…</label>
+        <input type="file" id="spot-file" accept="image/*,.svg" hidden>
+        <span class="small muted" id="spot-name"></span>
+      </div>
+      <div id="spot-box"></div>
+      <p id="spot-out" style="font-weight:800; font-size:1.15rem; margin-top:10px"></p>
+    </details>
 
     <div class="card" id="check-box" hidden>
       <h2 id="check-title">Quiz check</h2>
@@ -92,7 +107,9 @@
           <ul class="issues small" id="c-issues"></ul>
           <div class="row" style="margin-top:12px">
             <button class="btn btn-primary btn-big" id="c-next">Start quiz</button>
+            <button class="btn" id="c-alt" hidden>Skip</button>
             <button class="btn" id="c-end-q" hidden>End question now</button>
+            <input type="file" id="pics-again" webkitdirectory multiple hidden>
           </div>
           <table class="live-table" id="c-live" hidden></table>
         </div>
@@ -128,11 +145,12 @@
   </section>
 </div>
 
-<script src="firebase-config.js"></script>
-<script src="quiz-lib.js"></script>
-<script src="xlsx-lib.js"></script>
-<script src="common.js"></script>
-<script src="sample-quiz.js"></script>
-<script src="host.js"></script>
+<script src="firebase-config.js?v=2.1"></script>
+<script src="quiz-lib.js?v=2.1"></script>
+<script src="xlsx-lib.js?v=2.1"></script>
+<script src="common.js?v=2.1"></script>
+<script src="pin.js?v=2.1"></script>
+<script src="sample-quiz.js?v=2.1"></script>
+<script src="host.js?v=2.1"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@
   "use strict";
 
   var WQ = window.WQ = {};
+  WQ.VERSION = "2.1 · pictures and pin rounds (21 Nov 2026)";
 
   // ---------- Scoring rules ----------
   WQ.POINTS_MAX = 1000;      // correct answer at the very first moment
@@ -12,6 +13,48 @@
   WQ.STANDINGS_AFTER = [4, 9];
   WQ.LETTERS = ["A", "B", "C", "D"];
   WQ.MODE_LABEL = { first: "First answer counts", agree: "Team agreement", captain: "First answer counts" };
+  WQ.TYPE_LABEL = { mc: "Multiple choice", pin: "Pin the tail" };
+
+  // Pin rounds: a correct spot on a picture. Positions are % across (x) and % down (y) from the top-left corner.
+  // Distance is measured in % of the picture's width. Full marks inside "full", nothing beyond "zero".
+  WQ.PIN_SECONDS = 30;
+  WQ.SHOW_FOR = 8;          // seconds players study the full picture before the item is taken away (Show first)
+  WQ.PIN_LEVELS = {
+    easy:   { full: 5, zero: 35, label: "Easy" },
+    medium: { full: 3, zero: 25, label: "Medium" },
+    hard:   { full: 2, zero: 15, label: "Hard" }
+  };
+  WQ.pinDistance = function (a, b, aspect) {           // aspect = picture width / height
+    var dx = a.x - b.x, dy = (a.y - b.y) / (aspect || 1);
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+  WQ.pinAccuracy = function (dist, level) {
+    var lv = WQ.PIN_LEVELS[level] || WQ.PIN_LEVELS.medium;
+    if (dist <= lv.full) return 1;
+    if (dist >= lv.zero) return 0;
+    return 1 - (dist - lv.full) / (lv.zero - lv.full);
+  };
+  WQ.pinPoints = function (accuracy, elapsedMs, totalMs) {
+    return Math.round(accuracy * WQ.speedPoints(elapsedMs, totalMs));
+  };
+  WQ.pct = function (acc) { return Math.round((acc || 0) * 100) + "%"; };
+
+  // Pictures that come with the website (used by the sample quiz and the practice), so they never go through Firebase.
+  WQ.BUILTIN_PICS = {
+    "donkey.svg": { w: 1000, h: 760 },
+    "ireland-map.svg": { w: 788, h: 1000 },
+    "snowman.svg": { w: 800, h: 1000 },
+    "snowman-nose.svg": { w: 800, h: 1000 }
+  };
+  WQ.builtinPic = function (name) {
+    var k = String(name || "").trim().toLowerCase();
+    return WQ.BUILTIN_PICS[k] ? { src: k, w: WQ.BUILTIN_PICS[k].w, h: WQ.BUILTIN_PICS[k].h } : null;
+  };
+  // The unscored practice that opens the first pin round.
+  WQ.PRACTICE = {
+    text: "Pin the tail on the donkey! Tap where the tail joins on, drag to adjust, then press Lock in.",
+    picture: "donkey.svg", target: { x: 82.2, y: 41.8 }, level: "easy", marker: "tail", seconds: 30
+  };
 
   // Doubles, poison and steals
   WQ.DPS_ROUNDS = 9;        // picks and steals use rounds 1–9; round 10 is a normal final round
@@ -34,6 +77,14 @@
     var poison = {};
     p.poison.forEach(function (n) { poison["r" + n] = true; });
     return { double: p.double, poison: poison };
+  };
+
+  // Time taken to answer, leaving out any time the clock was stopped to show the full picture again.
+  // state.pauses lists each stop as {at, ms}; state.startAt has been moved on by all of them.
+  WQ.elapsed = function (s, at) {
+    var total = 0, before = 0;
+    WQ.arr(s && s.pauses).forEach(function (p) { total += p.ms || 0; if (p.at < at) before += p.ms || 0; });
+    return at - (s.startAt - total) - before;
   };
 
   WQ.speedPoints = function (elapsedMs, totalMs) {

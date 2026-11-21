@@ -5,8 +5,8 @@
 
   var quiz = null;      // the full quiz, including answers. Only ever kept on this computer.
   var pendingCheck = null;
-  var game = { meta: null, state: null, players: {}, presence: {}, assign: {}, answers: {}, locks: {}, results: {}, pscores: {}, picks: {}, steals: {} };
-  var curQid = null, unsubAnswers = null, unsubLocks = null;
+  var game = { meta: null, state: null, players: {}, presence: {}, assign: {}, answers: {}, locks: {}, results: {}, pscores: {}, picks: {}, steals: {}, picsLoaded: {} };
+  var curQid = null, unsubAnswers = null, unsubLocks = null, unsubVotes = null, phaseTimer = null;
   var closeTimer = null, stopCountdown = null;
   var pendingLocks = {};
   var takeoversInHand = {};
@@ -42,6 +42,7 @@
   // ======================================================================
   // Starting screen
   // ======================================================================
+  $("version").textContent = "Version " + (WQ.VERSION || "1 (old files still loaded: press Ctrl+F5)");
   function showStart() {
     WQ.show("s-start");
     var saved = WQ.store.get("wq-host");
@@ -53,7 +54,10 @@
     var saved = WQ.store.get("wq-host");
     if (!saved) return showStart();
     quiz = saved.quiz;
-    openGame(saved.code);
+    PicStore.get(saved.code).then(function (map) {
+      Object.keys(map || {}).forEach(function (k) { if (!picData[k]) picData[k] = map[k]; });
+      openGame(saved.code);
+    });
   });
   $("forget").addEventListener("click", function () {
     WQ.store.del("wq-host");
@@ -64,6 +68,7 @@
     var f = e.target.files && e.target.files[0];
     if (!f) return;
     var title = f.name.replace(/\.[^.]+$/, "");
+    picData = {};
     f.arrayBuffer().then(function (buf) {
       var res;
       try { res = parseQuizFile(buf, title); }
@@ -71,6 +76,28 @@
       showCheck(res);
     });
     e.target.value = "";
+  });
+
+  // Helper for writing pin questions: click a picture to read off Target X % and Target Y %.
+  $("spot-file").addEventListener("change", function (e) {
+    var f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    var url = URL.createObjectURL(f), img = new Image();
+    img.onload = function () {
+      var box = WQ.clear($("spot-box"));
+      $("spot-name").textContent = f.name;
+      $("spot-out").textContent = "Click the right spot on the picture.";
+      var board = WQ.pinBoard({ pic: { src: url, w: img.naturalWidth || 1000, h: img.naturalHeight || 750 }, interactive: true, zoom: true,
+        maxH: function () { return Math.min(560, window.innerHeight * 0.7); },
+        onChange: function (p) {
+          if (!p) return;
+          $("spot-out").textContent = "Target X %: " + (Math.round(p.x * 10) / 10) + "    Target Y %: " + (Math.round(p.y * 10) / 10);
+        } });
+      box.appendChild(board.el);
+      board.refresh();
+    };
+    img.src = url;
   });
 
   $("use-sample").addEventListener("click", function () {
@@ -88,6 +115,25 @@
     }
     var teamRows = sheet("Teams"), roundRows = sheet("Rounds"), qRows = sheet("Questions");
     var str = function (v) { return String(v === null || v === undefined ? "" : v).trim(); };
+    // Columns are found by their headings, so older quiz files (without the newer columns) still load.
+    var norm = function (v) { return str(v).toLowerCase().replace(/[^a-z0-9]/g, ""); };
+    function columns(header, spec) {
+      var heads = (header || []).map(norm), out = {};
+      Object.keys(spec).forEach(function (key) {
+        var names = spec[key][0], fallback = spec[key][1], idx = -1;
+        names.forEach(function (n) { if (idx < 0) idx = heads.indexOf(n); });
+        names.forEach(function (n) { if (idx < 0) heads.forEach(function (hd, i) { if (idx < 0 && hd && hd.indexOf(n) === 0) idx = i; }); });
+        out[key] = idx >= 0 ? idx : fallback;
+      });
+      return out;
+    }
+    var cell = function (r, i) { return i === null || i < 0 ? "" : str(r[i]); };
+    var num01 = function (v) {
+      var t = str(v).replace("%", "").replace(",", ".");
+      if (!t) return null;
+      var n = parseFloat(t);
+      return isFinite(n) ? n : null;
+    };
 
     var teams = [];
     teamRows.slice(1).forEach(function (r) {
@@ -96,36 +142,79 @@
     });
     if (!teams.length) warnings.push("No team names on the Teams sheet. You can add teams on the next screen.");
 
+    var rc = columns(roundRows[0], { round: [["round"], 0], topic: [["topic"], 1], type: [["roundtype", "type"], null], mode: [["howteamsanswer", "mode"], 2] });
     var rounds = {};
     roundRows.slice(1).forEach(function (r) {
-      var num = parseInt(r[0], 10);
+      var num = parseInt(cell(r, rc.round), 10);
       if (!(num >= 1 && num <= 10)) return;
-      rounds[num] = { num: num, topic: str(r[1]), mode: /agree/i.test(str(r[2])) ? "agree" : "first", questions: [] };
+      var type = /pin/i.test(cell(r, rc.type)) ? "pin" : "mc";
+      var mode = /agree/i.test(cell(r, rc.mode)) ? "agree" : "first";
+      if (type === "pin" && mode === "agree") {
+        warnings.push("Round " + num + " is a pin round, so it will use First answer counts (teammates can't all tap exactly the same spot).");
+        mode = "first";
+      }
+      rounds[num] = { num: num, topic: cell(r, rc.topic), type: type, mode: mode, questions: [] };
     });
 
+    var qc = columns(qRows[0], {
+      round: [["round"], 0], question: [["question"], 1], a: [["optiona"], 2], b: [["optionb"], 3], c: [["optionc"], 4], d: [["optiond"], 5],
+      answer: [["correctanswer", "answer"], 6], seconds: [["seconds"], 7], picture: [["picture"], 8],
+      tx: [["targetx"], null], ty: [["targety"], null], level: [["difficulty"], null], marker: [["marker"], null],
+      full: [["showfirst"], null], showFor: [["showfor"], null]
+    });
     qRows.slice(1).forEach(function (r, i) {
       var rowNo = i + 2;
-      var text = str(r[1]);
+      var text = cell(r, qc.question);
       if (!text) return;
-      var num = parseInt(r[0], 10);
+      var num = parseInt(cell(r, qc.round), 10);
       if (!(num >= 1 && num <= 10)) { errors.push("Questions row " + rowNo + ": the round must be a number from 1 to 10."); return; }
-      var raw = [str(r[2]), str(r[3]), str(r[4]), str(r[5])];
+      if (!rounds[num]) rounds[num] = { num: num, topic: "", type: "mc", mode: "first", questions: [] };
+      var isPin = rounds[num].type === "pin";
+      var picture = cell(r, qc.picture);
+      var secsText = cell(r, qc.seconds);
+      var defSecs = isPin ? WQ.PIN_SECONDS : 20;
+      var seconds = secsText ? parseInt(secsText, 10) : defSecs;
+      if (!(seconds >= 5 && seconds <= 120)) {
+        warnings.push("Questions row " + rowNo + ": seconds should be between 5 and 120, so " + defSecs + " will be used.");
+        seconds = defSecs;
+      }
+      if (isPin) {
+        if (!picture) { errors.push("Questions row " + rowNo + ": a pin question needs a picture file name in the Picture column."); return; }
+        var tx = num01(cell(r, qc.tx)), ty = num01(cell(r, qc.ty));
+        if (tx === null || ty === null || tx < 0 || tx > 100 || ty < 0 || ty > 100) {
+          errors.push("Questions row " + rowNo + ": a pin question needs Target X % and Target Y % (numbers from 0 to 100, measured from the top-left corner).");
+          return;
+        }
+        var lvText = cell(r, qc.level).toLowerCase(), level = "medium";
+        if (/^e/.test(lvText)) level = "easy"; else if (/^h/.test(lvText)) level = "hard";
+        else if (lvText && !/^m/.test(lvText)) warnings.push("Questions row " + rowNo + ": difficulty should be Easy, Medium or Hard, so Medium will be used.");
+        var mkText = cell(r, qc.marker), marker = WQ.markerName(mkText) || "pin";
+        if (mkText && !WQ.markerName(mkText)) warnings.push("Questions row " + rowNo + ": the marker should be Pin, Tail, Carrot or Earth, so Pin will be used.");
+        if ([qc.a, qc.b, qc.c, qc.d, qc.answer].some(function (k) { return cell(r, k); })) warnings.push("Questions row " + rowNo + ": the options and correct answer are ignored in pin rounds.");
+        var pq = { kind: "pin", text: text, picture: picture, target: { x: tx, y: ty }, level: level, marker: marker, seconds: seconds };
+        var full = cell(r, qc.full);
+        if (full) {
+          var sfText = cell(r, qc.showFor), showFor = sfText ? parseInt(sfText, 10) : WQ.SHOW_FOR;
+          if (!(showFor >= 2 && showFor <= 15)) {
+            warnings.push("Questions row " + rowNo + ": Show for should be 2 to 15 seconds, so " + WQ.SHOW_FOR + " will be used.");
+            showFor = WQ.SHOW_FOR;
+          }
+          pq.full = full; pq.showFor = showFor;
+        }
+        rounds[num].questions.push(pq);
+        return;
+      }
+      var raw = [cell(r, qc.a), cell(r, qc.b), cell(r, qc.c), cell(r, qc.d)];
       var count = 0;
       while (count < 4 && raw[count]) count++;
       if (raw.slice(count).some(Boolean)) { errors.push("Questions row " + rowNo + ": fill in the options in order from A, without gaps."); return; }
       if (count < 2) { errors.push("Questions row " + rowNo + ": needs at least options A and B."); return; }
-      var ans = str(r[6]).toUpperCase();
+      var ans = cell(r, qc.answer).toUpperCase();
       var idx = WQ.LETTERS.indexOf(ans);
       if (idx < 0) { errors.push("Questions row " + rowNo + ": the correct answer must be A, B, C or D."); return; }
       if (idx >= count) { errors.push("Questions row " + rowNo + ": the correct answer is " + ans + ", but option " + ans + " is empty."); return; }
-      var secsText = str(r[7]);
-      var seconds = secsText ? parseInt(secsText, 10) : 20;
-      if (!(seconds >= 5 && seconds <= 120)) {
-        warnings.push("Questions row " + rowNo + ": seconds should be between 5 and 120, so 20 will be used.");
-        seconds = 20;
-      }
-      if (!rounds[num]) rounds[num] = { num: num, topic: "", mode: "first", questions: [] };
-      rounds[num].questions.push({ text: text, options: raw.slice(0, count), answer: ans, seconds: seconds, picture: str(r[8]) });
+      if (cell(r, qc.full)) warnings.push("Questions row " + rowNo + ": Show first is only used in pin rounds, so it will be ignored.");
+      rounds[num].questions.push({ text: text, options: raw.slice(0, count), answer: ans, seconds: seconds, picture: picture });
     });
 
     var list = Object.keys(rounds).map(Number).sort(function (a, b) { return a - b; }).map(function (n) { return rounds[n]; })
@@ -145,10 +234,166 @@
     if (renumbered) warnings.push("Some round numbers were skipped, so the rounds have been numbered 1 to " + list.length + " in order.");
     if (!list.length) errors.push("No questions found on the Questions sheet.");
     else if (list.length !== 10) warnings.push("There are " + list.length + " rounds with questions. Standings appear after rounds 4 and 9, and the doubles and steals game expects 10 rounds.");
-    if (list.some(function (rd) { return rd.questions.some(function (q) { return q.picture; }); })) {
-      warnings.push("Pictures aren't supported yet, so picture file names will be ignored for now.");
-    }
     return { quiz: { title: title, teams: teams, rounds: list }, errors: errors, warnings: warnings };
+  }
+
+  // ======================================================================
+  // Pictures: read from the quiz folder on this computer, shrunk, and only sent out just before their question.
+  // ======================================================================
+  var picData = {};    // picture file name (lower case) → { data, w, h }
+  var picsSent = {};   // question id → true, for pictures already sent to phones this session
+  var lastSentPic = null;
+  function picKey(name) { return String(name || "").trim().toLowerCase(); }
+  function localPic(name) { return picData[picKey(name)] || null; }
+  function picDims(name) { var d = localPic(name) || WQ.builtinPic(name); return d ? { w: d.w, h: d.h } : { w: 4, h: 3 }; }
+  function neededPics(qz) {
+    var out = [];
+    ((qz || quiz) ? (qz || quiz).rounds : []).forEach(function (rd) {
+      rd.questions.forEach(function (q) {
+        [q.picture, q.full].forEach(function (nm) { if (nm && out.indexOf(picKey(nm)) < 0) out.push(picKey(nm)); });
+      });
+    });
+    return out;
+  }
+  function missingPics(qz) {
+    return neededPics(qz).filter(function (k) { return !picData[k] && !WQ.builtinPic(k); });
+  }
+  // What a phone needs to show a question's picture: a website file, or the id of a picture sent through Firebase.
+  function questionPic(q, qid, which) {
+    var name = which === "full" ? q && q.full : q && q.picture;
+    if (!name) return null;
+    var id = which === "full" ? qid + "f" : qid;
+    var d = localPic(name);
+    if (d) return { id: id, w: d.w, h: d.h };
+    var b = WQ.builtinPic(name);
+    return b ? { src: b.src, w: b.w, h: b.h } : { id: id, w: 4, h: 3 };
+  }
+
+  function processPicture(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth || 1200, ht = img.naturalHeight || 900;
+        var sc = Math.min(1, 1280 / Math.max(w, ht));
+        var cw = Math.max(1, Math.round(w * sc)), ch = Math.max(1, Math.round(ht * sc));
+        var c = document.createElement("canvas");
+        c.width = cw; c.height = ch;
+        var ctx = c.getContext("2d");
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cw, ch);
+        ctx.drawImage(img, 0, 0, cw, ch);
+        var quality = 0.82, data = c.toDataURL("image/jpeg", quality);
+        while (data.length > 420000 && quality > 0.5) { quality -= 0.1; data = c.toDataURL("image/jpeg", quality); }
+        URL.revokeObjectURL(url);
+        resolve({ data: data, w: cw, h: ch });
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error("Couldn't open " + file.name + " as a picture.")); };
+      img.src = url;
+    });
+  }
+  // Match chosen files to the picture names in the quiz (case doesn't matter; the extension can be left off in the quiz file).
+  function loadPictureFiles(files, qz) {
+    var wanted = neededPics(qz), jobs = [], found = [];
+    var list = Array.prototype.slice.call(files || []).filter(function (f) { return /^image\//.test(f.type) || /\.(jpe?g|png|gif|webp|svg|bmp)$/i.test(f.name); });
+    wanted.forEach(function (k) {
+      var stem = k.replace(/\.[^.]+$/, "");
+      var f = list.filter(function (x) { return x.name.toLowerCase() === k; })[0] ||
+        list.filter(function (x) { return x.name.toLowerCase().replace(/\.[^.]+$/, "") === stem; })[0];
+      if (!f) return;
+      found.push(k);
+      jobs.push(processPicture(f).then(function (d) { picData[k] = d; }));
+    });
+    return Promise.all(jobs.map(function (j) { return j.catch(function (e) { return e; }); })).then(function (res) {
+      return { found: found, problems: res.filter(function (x) { return x instanceof Error; }).map(function (e) { return e.message; }) };
+    });
+  }
+
+  // Pictures are kept in this browser's storage for the game, so "Carry on" after a refresh still has them.
+  var PicStore = {
+    open: function () {
+      if (this.p) return this.p;
+      this.p = new Promise(function (res, rej) {
+        if (!window.indexedDB) return rej(new Error("no storage"));
+        var r = indexedDB.open("wq-pictures", 1);
+        r.onupgradeneeded = function () { r.result.createObjectStore("games"); };
+        r.onsuccess = function () { res(r.result); };
+        r.onerror = function () { rej(r.error); };
+      });
+      return this.p;
+    },
+    put: function (code, map) {
+      return this.open().then(function (db) {
+        return new Promise(function (res, rej) {
+          var tx = db.transaction("games", "readwrite"), st = tx.objectStore("games");
+          st.clear(); st.put(map, code);
+          tx.oncomplete = function () { res(); }; tx.onerror = function () { rej(tx.error); };
+        });
+      }).catch(warn);
+    },
+    get: function (code) {
+      return this.open().then(function (db) {
+        return new Promise(function (res) {
+          var r = db.transaction("games").objectStore("games").get(code);
+          r.onsuccess = function () { res(r.result || {}); }; r.onerror = function () { res({}); };
+        });
+      }).catch(function () { return {}; });
+    }
+  };
+
+  // Sends a question's picture (and its "show first" full picture, if it has one) to phones.
+  function sendPic(r, n) {
+    var rd = roundOf(r), q = rd && rd.questions[n - 1];
+    if (!q || !q.picture) return Promise.resolve();
+    var qid = "r" + r + "q" + n, d = localPic(q.picture), f = q.full ? localPic(q.full) : null;
+    if ((!d && !f) || picsSent[qid]) return Promise.resolve();
+    picsSent[qid] = true;
+    lastSentPic = qid;
+    var upd = {};
+    if (f) upd["pics/" + qid + "f"] = { data: f.data, w: f.w, h: f.h };
+    if (d) upd["pics/" + qid] = { data: d.data, w: d.w, h: d.h };
+    return L.update(WQ.ref(""), upd).catch(function (e) { delete picsSent[qid]; warn(e); });
+  }
+  // The picture ids a phone needs before a question can be shown (only pictures sent through Firebase).
+  function picIdsFor(qid) {
+    var m = /^r(\d+)q(\d+)$/.exec(qid || ""), rd = m && roundOf(+m[1]), q = rd && rd.questions[+m[2] - 1], ids = [];
+    if (q && q.picture && localPic(q.picture)) ids.push(qid);
+    if (q && q.full && localPic(q.full)) ids.push(qid + "f");
+    return ids;
+  }
+  function nextQuestionAfter(r, n) {
+    var rd = roundOf(r);
+    if (rd && n < rd.questions.length) return [r, n + 1];
+    if (r < quiz.rounds.length) return [r + 1, 1];
+    return null;
+  }
+  // Remove pictures phones no longer need, keeping the ones listed.
+  function prunePics(keep) {
+    var upd = {};
+    Object.keys(picsSent).forEach(function (qid) {
+      if (keep.indexOf(qid) < 0) { upd["pics/" + qid] = null; upd["pics/" + qid + "f"] = null; delete picsSent[qid]; }
+    });
+    if (Object.keys(upd).length) L.update(WQ.ref(""), upd).catch(warn);
+  }
+
+  // ---------- The practice (built-in donkey) ----------
+  function practiceQuestion() {
+    var p = WQ.PRACTICE;
+    return { kind: "pin", text: p.text, picture: p.picture, target: p.target, level: p.level, marker: p.marker, seconds: p.seconds, practice: true };
+  }
+  function practiceDone() { var s = WQ.store.get("wq-host") || {}; return s.code === WQ.code && !!s.practiceDone; }
+  function setPracticeDone() { var s = WQ.store.get("wq-host") || {}; s.practiceDone = true; WQ.store.set("wq-host", s); }
+  function firstPinRound() {
+    for (var i = 0; i < quiz.rounds.length; i++) if (quiz.rounds[i].type === "pin") return quiz.rounds[i].num;
+    return 0;
+  }
+  function startPractice() {
+    var s = game.state, rd = roundOf(s.round), p = practiceQuestion();
+    var b = WQ.builtinPic(p.picture);
+    return L.set(WQ.ref("state"), {
+      phase: "question", round: s.round, roundTopic: rd.topic, mode: "first", type: "pin", totalRounds: quiz.rounds.length,
+      practice: true, qNum: 0, qCount: rd.questions.length, qid: "practice",
+      question: { kind: "pin", text: p.text, pic: { src: b.src, w: b.w, h: b.h }, marker: p.marker, level: p.level },
+      seconds: p.seconds, startAt: L.serverTimestamp(), lockedCount: 0, teamCount: activeTeams().length
+    });
   }
 
   function showCheck(res) {
@@ -166,10 +411,12 @@
       body.appendChild(h("p", null, [h("strong", { text: q.rounds.length + " rounds, " + nq + " questions. " }),
         q.teams.length ? "Teams: " + q.teams.join(", ") + "." : "No teams yet."]));
       body.appendChild(h("table", { class: "live-table" }, [
-        h("tr", null, [h("th", { text: "Round" }), h("th", { text: "Topic" }), h("th", { text: "How teams answer" }), h("th", { text: "Questions" })])
+        h("tr", null, [h("th", { text: "Round" }), h("th", { text: "Topic" }), h("th", { text: "Type" }), h("th", { text: "How teams answer" }), h("th", { text: "Questions" })])
       ].concat(q.rounds.map(function (rd) {
-        return h("tr", null, [h("td", { text: rd.num }), h("td", { text: rd.topic }), h("td", { text: WQ.MODE_LABEL[rd.mode] }), h("td", { class: "num", text: rd.questions.length })]);
+        return h("tr", null, [h("td", { text: rd.num }), h("td", { text: rd.topic }), h("td", { text: WQ.TYPE_LABEL[rd.type || "mc"] }),
+          h("td", { text: WQ.MODE_LABEL[rd.mode] }), h("td", { class: "num", text: rd.questions.length })]);
       }))));
+      body.appendChild(picturesSection(q));
     }
     if (q && q.rounds.length) {
       var ten = q.rounds.length === 10;
@@ -183,9 +430,76 @@
       body.appendChild(h("p", { class: "small", style: { marginTop: "12px", fontWeight: "600" }, text: "Worth knowing:" }));
       body.appendChild(h("ul", { class: "issues small" }, res.warnings.map(function (w) { return h("li", { text: w }); })));
     }
-    $("create").disabled = !!res.errors.length || !q || !q.rounds.length;
-    box.scrollIntoView({ behavior: "smooth", block: "start" });
+    $("create").disabled = !!res.errors.length || !q || !q.rounds.length || missingPics(q).length > 0;
+    if (!res.keepScroll) box.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  // The pictures part of the quiz check: what's needed, what's missing, and each pin question's answer spot.
+  function picturesSection(q) {
+    var wrap = h("div", { style: { marginTop: "14px" } });
+    var needed = neededPics(q);
+    if (!needed.length) return wrap;
+    var missing = missingPics(q);
+    var own = needed.filter(function (k) { return !WQ.builtinPic(k) || picData[k]; });
+    wrap.appendChild(h("h3", { style: { marginTop: "6px" }, text: "Pictures" }));
+    if (own.length) {
+      wrap.appendChild(h("p", { class: missing.length ? "error" : "status ok", style: { marginTop: "4px" },
+        text: missing.length ? (own.length - missing.length) + " of " + own.length + " pictures found. Choose the folder with your pictures to carry on."
+          : "All " + own.length + (own.length === 1 ? " picture" : " pictures") + " found and ready." }));
+      if (missing.length) wrap.appendChild(h("ul", { class: "issues small" }, missing.map(function (k) { return h("li", { class: "error", text: "Missing: " + k }); })));
+      wrap.appendChild(h("div", { class: "row", style: { marginTop: "8px" } }, [
+        h("label", { class: "btn" + (missing.length ? " btn-primary" : ""), for: "pics-folder", text: "Choose pictures folder…" }),
+        h("label", { class: "btn-link", for: "pics-files", text: "or choose picture files" })
+      ]));
+      wrap.appendChild(h("p", { class: "muted small", style: { marginTop: "6px" },
+        text: "Pictures stay on this computer. Each one is shrunk and sent to phones just before its question." }));
+    }
+    var pins = [];
+    q.rounds.forEach(function (rd) { rd.questions.forEach(function (qq, i) { if (qq.kind === "pin") pins.push({ rd: rd, q: qq, n: i + 1 }); }); });
+    if (pins.length) {
+      wrap.appendChild(h("p", { class: "small", style: { marginTop: "10px", fontWeight: "600" }, text: "Pin questions: the gold spot is the answer. Check each one looks right." }));
+      var grid = h("div", { class: "pic-check" });
+      var boards = [];
+      pins.forEach(function (x) {
+        var d = localPic(x.q.picture), b = WQ.builtinPic(x.q.picture);
+        var pic = d ? { data: d.data, w: d.w, h: d.h } : b ? b : null;
+        var fig = h("figure");
+        if (pic) {
+          var board = WQ.pinBoard({ pic: pic, marker: x.q.marker, maxH: function () { return 170; } });
+          board.setReveal({ target: x.q.target, dots: [], level: x.q.level, markerAtTarget: true });
+          fig.appendChild(board.el);
+          boards.push(board);
+        } else fig.appendChild(h("div", { class: "pin-loading", style: { position: "static", height: "120px", background: "#eef0f5", borderRadius: "10px" }, text: "Missing picture" }));
+        fig.appendChild(h("figcaption", { title: x.q.text, text: "R" + x.rd.num + " Q" + x.n + " · " + (WQ.PIN_LEVELS[x.q.level] || {}).label + " · " + x.q.picture + (x.q.full ? " · shows " + x.q.full + " first" : "") }));
+        // The full picture must be the same shape, or pins won't line up
+        if (x.q.full && pic) {
+          var fd = localPic(x.q.full) || WQ.builtinPic(x.q.full);
+          if (fd && Math.abs(fd.w / fd.h - pic.w / pic.h) > 0.02) fig.appendChild(h("div", { class: "error small", text: x.q.full + " is a different shape from " + x.q.picture + ", so the pins won't line up." }));
+        }
+        grid.appendChild(fig);
+      });
+      wrap.appendChild(grid);
+      setTimeout(function () { boards.forEach(function (b) { b.refresh(); }); }, 0);
+    }
+    return wrap;
+  }
+  function onPictureFiles(files) {
+    var qz = (pendingCheck && pendingCheck.quiz) || quiz;
+    if (!qz) return;
+    loadPictureFiles(files, qz).then(function (res) {
+      if (WQ.code && quiz) PicStore.put(WQ.code, picData);
+      if (pendingCheck && $("s-start") && !$("s-start").hidden) {
+        pendingCheck.keepScroll = true;
+        if (res.problems.length) pendingCheck.warnings = pendingCheck.warnings.concat(res.problems);
+        showCheck(pendingCheck);
+      }
+      if (WQ.code && quiz) render();
+    });
+  }
+  ["pics-folder", "pics-files", "pics-again"].forEach(function (id) {
+    var inp = $(id);
+    if (inp) inp.addEventListener("change", function (e) { onPictureFiles(e.target.files); e.target.value = ""; });
+  });
 
   $("create").addEventListener("click", function () {
     if (!pendingCheck || !pendingCheck.quiz) return;
@@ -206,12 +520,13 @@
     var teams = {};
     quiz.teams.forEach(function (name, i) { teams["t" + (i + 1)] = { name: name, order: i + 1 }; });
     var rounds = {};
-    quiz.rounds.forEach(function (rd) { rounds["r" + rd.num] = { num: rd.num, topic: rd.topic, mode: rd.mode, count: rd.questions.length }; });
+    quiz.rounds.forEach(function (rd) { rounds["r" + rd.num] = { num: rd.num, topic: rd.topic, mode: rd.mode, type: rd.type || "mc", count: rd.questions.length }; });
     var meta = { hostUid: WQ.uid, created: L.serverTimestamp(), title: quiz.title, teams: teams, rounds: rounds, totalRounds: quiz.rounds.length, theme: "festive", dps: !!quiz.dps };
     L.set(L.ref(WQ.db, "games/" + code + "/meta"), meta)
       .then(function () { return L.set(L.ref(WQ.db, "games/" + code + "/state"), { phase: "lobby" }); })
       .then(function () {
         WQ.store.set("wq-host", { code: code, quiz: quiz });
+        if (neededPics().length) PicStore.put(code, picData);
         openGame(code);
       })
       .catch(function (err) {
@@ -242,12 +557,13 @@
     });
     WQ.listen("state", function (v) { game.state = v || { phase: "lobby" }; onState(); render(); });
     WQ.listen("players", function (v) { game.players = v || {}; handleTakeovers(); render(); });
-    WQ.listen("presence", function (v) { game.presence = v || {}; checkLocks(); render(); });
+    WQ.listen("presence", function (v) { game.presence = v || {}; checkLocks(); syncReady(); render(); });
     WQ.listen("assign", function (v) { game.assign = v || {}; render(); });
     WQ.listen("results", function (v) { game.results = v || {}; render(); });
     WQ.listen("pscores", function (v) { game.pscores = v || {}; render(); });
     WQ.listen("picks", function (v) { game.picks = v || {}; syncSubmitted(); render(); });
     WQ.listen("steals", function (v) { game.steals = v || {}; syncSubmitted(); render(); });
+    WQ.listen("picsLoaded", function (v) { game.picsLoaded = v || {}; render(); });
   }
 
   $("g-theme").addEventListener("change", function () {
@@ -289,12 +605,21 @@
     var best = null;
     Object.keys(ans || {}).forEach(function (uid) {
       var a = ans[uid];
-      if (a && typeof a.at === "number" && (!best || a.at < best.at)) best = { uid: uid, opt: a.opt, at: a.at };
+      if (a && typeof a.at === "number" && (!best || a.at < best.at)) best = { uid: uid, opt: a.opt, x: a.x, y: a.y, at: a.at };
     });
     return best;
   }
+  // A team's locked answer: a letter for multiple choice, or a spot (x, y) for a pin question.
+  function lockFrom(a, how) {
+    var lock = { at: a.at, how: how };
+    if (a.uid) lock.by = a.uid;
+    if (typeof a.x === "number") { lock.x = a.x; lock.y = a.y; } else lock.opt = a.opt;
+    return lock;
+  }
   function currentQuestion() {
-    var s = game.state; var rd = s && roundOf(s.round);
+    var s = game.state;
+    if (s && s.practice) return practiceQuestion();
+    var rd = s && roundOf(s.round);
     return rd && s.qNum ? rd.questions[s.qNum - 1] : null;
   }
   function teamTotal(tid, round) { var r = game.results[tid]; return WQ.sumPoints(r && r.q, round); }
@@ -306,13 +631,24 @@
     if (s.qid !== curQid) {
       if (unsubAnswers) unsubAnswers();
       if (unsubLocks) unsubLocks();
-      unsubAnswers = unsubLocks = null;
+      if (unsubVotes) unsubVotes();
+      unsubAnswers = unsubLocks = unsubVotes = null;
       curQid = s.qid || null;
-      game.answers = {}; game.locks = {};
+      game.answers = {}; game.locks = {}; game.votes = {};
       if (curQid) {
         unsubAnswers = WQ.listen("answers/" + curQid, function (v) { game.answers = v || {}; checkLocks(); render(); });
         unsubLocks = WQ.listen("locks/" + curQid, function (v) { game.locks = v || {}; updateLockedCount(); checkLocks(); render(); });
+        unsubVotes = WQ.listen("ready/" + curQid, function (v) { game.votes = v || {}; syncReady(); render(); });
       }
+    }
+    // Players study the full picture for a few seconds, then the Ready? screen comes up (also after a refresh mid-way).
+    if (phaseTimer) { clearTimeout(phaseTimer); phaseTimer = null; }
+    var showMs = s.question && s.question.showFor ? s.question.showFor * 1000 : 0;
+    if (s.phase === "preview" && typeof s.startAt === "number") {
+      var pq = s.qid, pr = s.studyRound;
+      phaseTimer = setTimeout(function () {
+        if (game.state.phase === "preview" && game.state.qid === pq && game.state.studyRound === pr) toReady();
+      }, Math.max(0, s.startAt + showMs - WQ.now()));
     }
     if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
     if (stopCountdown) { stopCountdown(); stopCountdown = null; }
@@ -340,7 +676,7 @@
       var ans = game.answers[tid] || {};
       if (s.mode !== "agree") {
         var first = firstAnswer(ans);
-        if (first) upd[key] = { opt: first.opt, at: first.at, how: "first", by: first.uid };
+        if (first) upd[key] = lockFrom(first, "first");
       } else {
         var online = membersOf(tid).filter(isOnline);
         if (!online.length) return;
@@ -378,6 +714,36 @@
     if (allDone) closeQuestion();
   }
 
+  function beginAnswering() {
+    return L.update(WQ.ref("state"), { phase: "question", startAt: L.serverTimestamp() }).catch(warn);
+  }
+  // Look-first questions: study the full picture → Ready? Yes/No → (study again if most say No) → the question.
+  function toReady() {
+    return L.update(WQ.ref("state"), { phase: "ready", readyYes: 0, readyNo: 0, readyOf: readyOf() }).catch(warn);
+  }
+  function studyAgain() {
+    var s = game.state;
+    return L.update(WQ.ref("state"), { phase: "preview", startAt: L.serverTimestamp(), studyRound: (s.studyRound || 1) + 1, readyYes: 0, readyNo: 0 });
+  }
+  function readyOf() { return Object.keys(game.players).filter(function (uid) { return teamOf(uid) && isOnline(uid); }).length; }
+  // Yes and No answers for this study round, from players in a team.
+  function readyCounts() {
+    var s = game.state || {}, yes = 0, no = 0;
+    Object.keys(game.votes || {}).forEach(function (uid) {
+      var v = game.votes[uid];
+      if (!v || v.r !== s.studyRound || !teamOf(uid)) return;
+      if (v.v === "yes") yes++; else if (v.v === "no") no++;
+    });
+    return { yes: yes, no: no, of: readyOf() };
+  }
+  function mostSayNo(c) { return c.no * 2 > c.of; }
+  function syncReady() {
+    var s = game.state;
+    if (!s || s.phase !== "ready") return;
+    var c = readyCounts();
+    if (s.readyYes !== c.yes || s.readyNo !== c.no || s.readyOf !== c.of) L.update(WQ.ref("state"), { readyYes: c.yes, readyNo: c.no, readyOf: c.of }).catch(warn);
+  }
+
   function closeQuestion() {
     if (game.state.phase !== "question") return;
     L.update(WQ.ref("state"), { phase: "closed" }).catch(warn);
@@ -385,25 +751,38 @@
 
   // ---------- Moving through the quiz ----------
   function startQuestion(r, n) {
-    var rd = roundOf(r), q = rd.questions[n - 1];
-    return L.set(WQ.ref("state"), {
-      phase: "question", round: r, roundTopic: rd.topic, mode: rd.mode, totalRounds: quiz.rounds.length,
-      qNum: n, qCount: rd.questions.length, qid: "r" + r + "q" + n,
-      question: { text: q.text, options: q.options }, seconds: q.seconds,
-      startAt: L.serverTimestamp(), lockedCount: 0, teamCount: activeTeams().length
+    var rd = roundOf(r), q = rd.questions[n - 1], qid = "r" + r + "q" + n;
+    var question = q.kind === "pin"
+      ? { kind: "pin", text: q.text, pic: questionPic(q, qid), marker: q.marker || "pin", level: q.level || "medium" }
+      : { text: q.text, options: q.options };
+    var preview = q.kind === "pin" && q.full;
+    if (preview) { question.full = questionPic(q, qid, "full"); question.showFor = q.showFor || WQ.SHOW_FOR; }
+    if (q.kind !== "pin" && q.picture) question.pic = questionPic(q, qid);
+    var nx = nextQuestionAfter(r, n);
+    return sendPic(r, n).then(function () {
+      prunePics([qid].concat(nx ? ["r" + nx[0] + "q" + nx[1]] : []));
+      // With a "show first" picture, the full picture shows for a few seconds before the clock starts.
+      return L.set(WQ.ref("state"), {
+        phase: preview ? "preview" : "question", studyRound: preview ? 1 : null, round: r, roundTopic: rd.topic, mode: rd.mode, type: rd.type || "mc", totalRounds: quiz.rounds.length,
+        qNum: n, qCount: rd.questions.length, qid: qid,
+        question: question, seconds: q.seconds,
+        startAt: L.serverTimestamp(), lockedCount: 0, teamCount: activeTeams().length
+      });
     });
   }
 
   function roundIntro(r) {
     var rd = roundOf(r);
     return L.set(WQ.ref("state"), {
-      phase: "roundIntro", round: r, roundTopic: rd.topic, mode: rd.mode, qCount: rd.questions.length, totalRounds: quiz.rounds.length
-    });
+      phase: "roundIntro", round: r, roundTopic: rd.topic, mode: rd.mode, type: rd.type || "mc", qCount: rd.questions.length, totalRounds: quiz.rounds.length,
+      practice: rd.type === "pin" && r === firstPinRound() && !practiceDone()
+    }).then(function () { sendPic(r, 1); });
   }
 
   function revealAnswer() {
     var s = game.state, q = currentQuestion();
     if (!q || s.phase !== "closed") return;
+    if (q.kind === "pin") return revealPin(s, q);
     var correct = q.answer, total = s.seconds * 1000;
     Promise.all([L.get(WQ.ref("answers/" + s.qid)), L.get(WQ.ref("locks/" + s.qid))]).then(function (snaps) {
       var answers = snaps[0].val() || {}, locks = snaps[1].val() || {};
@@ -437,6 +816,57 @@
       upd["state/phase"] = "reveal";
       upd["state/correct"] = correct;
       return L.update(WQ.ref(""), upd);
+    }).then(sendNextPic).catch(function (e) { alertBox("Couldn't reveal the answer: " + ((e && e.message) || e)); });
+  }
+  // While everyone looks at the answer, quietly send the next question's picture to phones.
+  function sendNextPic() {
+    var s = game.state;
+    if (!s || s.practice) return;
+    var nx = nextQuestionAfter(s.round, s.qNum);
+    if (nx) sendPic(nx[0], nx[1]);
+  }
+
+  // Pin questions: accuracy (from how far the pin is from the right spot) times the usual speed points.
+  function revealPin(s, q) {
+    var total = s.seconds * 1000, practice = !!s.practice;
+    var dims = picDims(q.picture), aspect = dims.w / dims.h;
+    function score(a) {
+      var dist = WQ.pinDistance(a, q.target, aspect), acc = WQ.pinAccuracy(dist, q.level);
+      return { dist: Math.round(dist * 10) / 10, acc: Math.round(acc * 1000) / 1000, points: practice ? 0 : WQ.pinPoints(acc, WQ.elapsed(s, a.at), total) };
+    }
+    return Promise.all([L.get(WQ.ref("answers/" + s.qid)), L.get(WQ.ref("locks/" + s.qid))]).then(function (snaps) {
+      var answers = snaps[0].val() || {}, locks = snaps[1].val() || {};
+      var upd = {}, dots = [], bulls = 0;
+      activeTeams().forEach(function (tid) {
+        var lock = locks[tid], fa = firstAnswer(answers[tid] || {}), res;
+        var a = lock && typeof lock.x === "number" ? lock : (fa && typeof fa.x === "number" ? lockFrom(fa, "first") : null);
+        if (a) {
+          var sc = score(a);
+          res = { x: a.x, y: a.y, how: a.how || "first", acc: sc.acc, dist: sc.dist, correct: sc.acc > 0, points: sc.points };
+          if (a.by) res.by = a.by;
+        } else res = { how: "none", correct: false, points: 0 };
+        res.round = s.round; res.q = s.qNum;
+        if (!practice) upd["results/" + tid + "/q/" + s.qid] = res;
+      });
+      Object.keys(answers).forEach(function (tid) {
+        Object.keys(answers[tid] || {}).forEach(function (uid) {
+          var a = answers[tid][uid];
+          if (!a || typeof a.x !== "number") return;
+          var sc = score(a);
+          if (sc.acc >= 1) bulls++;
+          dots.push({ x: a.x, y: a.y });
+          if (!practice) upd["pscores/" + uid + "/q/" + s.qid] = { round: s.round, x: a.x, y: a.y, acc: sc.acc, dist: sc.dist, correct: sc.acc > 0, points: sc.points };
+        });
+      });
+      shuffleArr(dots);
+      upd["state/phase"] = "reveal";
+      upd["state/correctPin"] = { x: q.target.x, y: q.target.y };
+      upd["state/dots"] = dots.length ? dots : null;
+      upd["state/bulls"] = bulls;
+      return L.update(WQ.ref(""), upd);
+    }).then(function () {
+      if (practice) setPracticeDone();
+      sendNextPic();
     }).catch(function (e) { alertBox("Couldn't reveal the answer: " + ((e && e.message) || e)); });
   }
 
@@ -619,6 +1049,8 @@
     });
     upd["state"] = { phase: "final", totalRounds: quiz.rounds.length, step: 0, dps: dpsOn(),
       counts: { players: f.players, teams: f.teams } };
+    upd["pics"] = null;
+    picsSent = {};
     return L.update(WQ.ref(""), upd);
   }
   function revealNext() {
@@ -654,10 +1086,22 @@
       case "picks":
         var mp = missingCount("picks");
         return { label: "Start round 1" + (mp ? " (" + plural(mp, "team hasn't", "teams haven't") + " chosen: random picks)" : ""), run: startAfterPicks };
-      case "roundIntro": return { label: "Start question 1", run: function () { return startQuestion(s.round, 1); } };
+      case "roundIntro":
+        if (roundOf(s.round).type === "pin" && s.round === firstPinRound() && !practiceDone()) {
+          return { label: "Start the practice: pin the tail on the donkey (not scored)", run: startPractice,
+            alt: { label: "Skip the practice", run: function () { setPracticeDone(); return L.update(WQ.ref("state"), { practice: false }); } } };
+        }
+        return { label: "Start question 1", run: function () { return startQuestion(s.round, 1); } };
+      case "preview": return { label: "Players are studying the picture…", disabled: true };
+      case "ready":
+        var rc = readyCounts(), tally = rc.yes + " ready, " + rc.no + " not ready";
+        if (mostSayNo(rc)) return { label: "Show the picture again (" + rc.no + " of " + rc.of + " said not ready)", run: studyAgain,
+          alt: { label: "Start the question anyway", run: beginAnswering } };
+        return { label: "Start the question (" + tally + ")", run: beginAnswering };
       case "question": return { label: "Waiting for answers…", disabled: true };
       case "closed": return { label: "Reveal the answer", run: revealAnswer };
       case "reveal":
+        if (s.practice) return { label: "Start question 1 (this one counts)", run: function () { return startQuestion(s.round, 1); } };
         if (s.qNum < s.qCount) return { label: "Next question (" + (s.qNum + 1) + " of " + s.qCount + ")", run: function () { return startQuestion(s.round, s.qNum + 1); } };
         return { label: "End round " + s.round, run: function () { return L.update(WQ.ref("state"), { phase: "roundEnd" }); } };
       case "roundEnd":
@@ -695,6 +1139,14 @@
       .then(function () { busy = false; render(); });
   });
   $("c-end-q").addEventListener("click", closeQuestion);
+
+  $("c-alt").addEventListener("click", function () {
+    var step = nextStep();
+    if (!step.alt || busy) return;
+    busy = true;
+    Promise.resolve(step.alt.run()).catch(function (e) { alertBox((e && e.message) || String(e)); })
+      .then(function () { busy = false; render(); });
+  });
 
   function alertBox(msg) {
     var issues = $("c-issues");
@@ -849,6 +1301,50 @@
     });
   }
 
+  // The quiz master's own view of a picture: the answer spot, and each team's pin as it comes in.
+  var hostBoard = { key: null, board: null };
+  var TEAM_COLOURS = ["#d6453d", "#2f6fd6", "#c98a00", "#2c9a55", "#8e44ad", "#138d8a", "#e0711d", "#34495e", "#c2185b", "#5d7c16"];
+  function hostBoardFor(q, key) {
+    if (hostBoard.key === key && hostBoard.board) return hostBoard.board;
+    var d = localPic(q.picture), b = WQ.builtinPic(q.picture);
+    var pic = d ? { data: d.data, w: d.w, h: d.h } : b;
+    if (!pic) return null;
+    var board = WQ.pinBoard({ pic: pic, marker: q.marker || "pin", maxH: function () { return 300; }, maxW: function () { return 460; } });
+    if (q.kind === "pin") board.setReveal({ target: q.target, dots: [], level: q.level, markerAtTarget: true });
+    hostBoard = { key: key, board: board };
+    return board;
+  }
+  function teamPins(s) {
+    var out = [];
+    teamIds().forEach(function (tid, i) {
+      var src = s.phase === "reveal" && !s.practice ? ((game.results[tid] || {}).q || {})[s.qid] : game.locks[tid];
+      if (src && typeof src.x === "number" && activeTeams().indexOf(tid) >= 0) {
+        out.push({ x: src.x, y: src.y, label: teamName(tid), color: TEAM_COLOURS[i % TEAM_COLOURS.length] });
+      }
+    });
+    return out;
+  }
+  // How many phones have the next picture ready.
+  function picturesLine(s) {
+    if (missingPics().length) {
+      return h("div", { class: "status bad" }, [
+        "Some pictures need loading again on this computer. ",
+        h("label", { class: "btn", for: "pics-again", style: { marginLeft: "6px" }, text: "Choose pictures folder…" })
+      ]);
+    }
+    if (!lastSentPic || ["roundIntro", "preview", "question", "closed", "reveal", "roundEnd"].indexOf(s.phase) < 0) return null;
+    var people = Object.keys(game.players).filter(function (uid) { return teamOf(uid) && isOnline(uid); });
+    if (!people.length) return null;
+    var need = picIdsFor(lastSentPic);
+    var ready = people.filter(function (uid) {
+      var have = String(game.picsLoaded[uid] || "").split(",");
+      return need.every(function (id) { return have.indexOf(id) >= 0; });
+    }).length;
+    var m = /^r(\d+)q(\d+)$/.exec(lastSentPic);
+    return h("p", { class: "small " + (ready === people.length ? "muted" : ""), style: { marginTop: "8px", fontWeight: ready === people.length ? "400" : "700" },
+      text: "Picture for round " + (m ? m[1] + " question " + m[2] : "") + ": ready on " + ready + " of " + people.length + " phones" + (ready === people.length ? " ✓" : "…") });
+  }
+
   function renderControl() {
     var s = game.state || { phase: "lobby" };
     var total = quiz.rounds.length;
@@ -856,7 +1352,9 @@
       lobby: "Lobby: people are joining",
       topics: "Showing the round topics",
       roundIntro: "Round " + s.round + " intro",
-      question: "Question live",
+      question: s.practice ? "Practice live (not scored)" : "Question live",
+      preview: (s.studyRound > 1 ? "Showing the picture again" : "Players are studying the full picture") + " (" + ((s.question && s.question.showFor) || WQ.SHOW_FOR) + " seconds)",
+      ready: "Ready? Players are answering Yes or No",
       closed: "Time's up",
       reveal: "Answer revealed",
       roundEnd: "End of round " + s.round,
@@ -870,27 +1368,48 @@
     var where = "";
     if (s.round) {
       where = "Round " + s.round + " of " + total + " · " + (s.roundTopic || "") + " · " + (WQ.MODE_LABEL[s.mode] || "");
-      if (s.qNum && ["question", "closed", "reveal"].indexOf(s.phase) >= 0) where += " · Question " + s.qNum + " of " + s.qCount;
+      if (s.practice && ["question", "closed", "reveal"].indexOf(s.phase) >= 0) where += " · Practice";
+      else if (s.qNum && ["preview", "ready", "question", "closed", "reveal"].indexOf(s.phase) >= 0) where += " · Question " + s.qNum + " of " + s.qCount;
     }
     $("c-where").textContent = where;
 
     // Question preview, for reading out
     var qbox = WQ.clear($("c-question"));
     var q = currentQuestion();
-    var showQ = q && ["question", "closed", "reveal"].indexOf(s.phase) >= 0;
-    if (!showQ && s.phase === "roundIntro") { q = roundOf(s.round).questions[0]; showQ = !!q; }
-    if (!showQ && s.phase === "reveal") showQ = false;
+    var showQ = q && ["preview", "ready", "question", "closed", "reveal"].indexOf(s.phase) >= 0;
+    var upcoming = false;
+    if (!showQ && s.phase === "roundIntro") { q = s.practice ? practiceQuestion() : roundOf(s.round).questions[0]; showQ = !!q; upcoming = true; }
     if (showQ) {
-      var upcoming = s.phase === "roundIntro";
-      qbox.appendChild(h("div", { class: "card", style: { background: "#f6f7fb", marginTop: "10px" } }, [
-        h("div", { class: "muted small", text: upcoming ? "Up next" : "Question" }),
-        h("div", { style: { fontWeight: "700", fontSize: "1.1rem", margin: "4px 0 8px" }, text: q.text }),
-        h("div", { class: "small" }, q.options.map(function (o, i) {
+      var card = h("div", { class: "card", style: { background: "#f6f7fb", marginTop: "10px" } }, [
+        h("div", { class: "muted small", text: (upcoming ? "Up next" : "Question") + (q.practice ? " · practice, not scored" : "") }),
+        h("div", { style: { fontWeight: "700", fontSize: "1.1rem", margin: "4px 0 8px" }, text: q.text })
+      ]);
+      if (q.kind === "pin") {
+        card.appendChild(h("div", { class: "small muted", text: (WQ.PIN_LEVELS[q.level] || WQ.PIN_LEVELS.medium).label + " · " + q.seconds + " seconds · " + q.picture + " · the gold spot is the answer" +
+          (q.full ? " · " + q.full + " shows first for " + (q.showFor || WQ.SHOW_FOR) + " s" : "") }));
+      } else {
+        card.appendChild(h("div", { class: "small" }, q.options.map(function (o, i) {
           var isAns = WQ.LETTERS[i] === q.answer;
           return h("div", { style: isAns ? { fontWeight: "800", color: "var(--ok)" } : null, text: WQ.LETTERS[i] + ". " + o + (isAns ? "  ✓ answer" : "") });
-        }))
+        })));
+      }
+      var hb = q.picture ? hostBoardFor(q, (upcoming ? "next:" : "") + (q.practice ? "practice" : s.qid || ("r" + s.round + "q1"))) : null;
+      if (hb) {
+        card.appendChild(hb.el);
+        if (q.kind === "pin" && !upcoming) hb.setOthers(teamPins(s));
+      }
+      qbox.appendChild(card);
+      if (hb) hb.refresh();
+    }
+    if (s.phase === "ready") {
+      var c2 = readyCounts(), waiting = Math.max(0, c2.of - c2.yes - c2.no);
+      qbox.appendChild(h("div", { class: "status" + (mostSayNo(c2) ? " warn" : " ok") }, [
+        "Ready? ✓ " + c2.yes + " yes · ✗ " + c2.no + " no · " + waiting + " still to answer. ",
+        mostSayNo(c2) ? "More than half said not ready, so you can show the picture again." : "Start the question when you're happy."
       ]));
     }
+    var picLine = picturesLine(s);
+    if (picLine) qbox.appendChild(picLine);
 
     var privateBox = function (title, rows) {
       qbox.appendChild(h("div", { class: "card", style: { background: "#f6f7fb", marginTop: "10px" } },
@@ -954,6 +1473,8 @@
     btn.textContent = step.label;
     btn.disabled = !!step.disabled || busy;
     $("c-end-q").hidden = s.phase !== "question";
+    $("c-alt").hidden = !step.alt;
+    if (step.alt) { $("c-alt").textContent = step.alt.label; $("c-alt").disabled = busy; }
 
     // Live table
     var live = $("c-live");
@@ -971,8 +1492,16 @@
           if (x.how === "first") return "first in: " + playerName(x.by);
           return { agreed: "agreed", timeout: "time ran out: captain's pick", none: "no answer" }[x.how] || x.how;
         };
-        var teamAns = res ? (res.opt ? res.opt + " (" + howText(res) + ")" : "No answer")
-          : lock ? lock.opt + " (" + howText(lock) + ")" : (s.phase === "question" ? "…" : "not locked");
+        var isPin = s.question && s.question.kind === "pin";
+        var teamAns;
+        if (isPin) {
+          var pr = s.practice ? null : res;
+          teamAns = pr ? (pr.how === "none" ? "No pin" : WQ.pct(pr.acc) + " accurate (" + howText(pr) + ")")
+            : lock ? "📍 pinned (" + howText(lock) + ")" : (s.phase === "question" ? "…" : "no pin");
+        } else {
+          teamAns = res ? (res.opt ? res.opt + " (" + howText(res) + ")" : "No answer")
+            : lock ? lock.opt + " (" + howText(lock) + ")" : (s.phase === "question" ? "…" : "not locked");
+        }
         live.appendChild(h("tr", null, [
           h("td", { text: teamName(tid) }),
           h("td", { text: answered + " / " + members.length + (online.length < members.length ? " (" + online.length + " connected)" : "") }),

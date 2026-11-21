@@ -11,6 +11,12 @@
   var subKeys = { answers: null, lock: null, results: null };
   var timer = { qid: null, bar: null, stop: null };
   var flashMsg = "";
+  var picCache = {}, picLoading = {};            // pictures sent through Firebase, by question id
+  var boardCache = { key: null, board: null };   // the picture board for the current question
+  var pinDraft = { qid: null, pin: null };       // where you've put your pin before locking it in
+  var fullCache = { key: null, board: null };    // the full picture shown first (look-first questions)
+  var ptimer = { key: null, bar: null, stop: null };
+  var myVote = {};                                // your Ready? answer, by question and study round
 
   function fatal(e) { $("fatal-msg").textContent = (e && e.message) || String(e); WQ.show("s-error"); }
 
@@ -109,6 +115,41 @@
     WQ.listen("assign", function (v) { g.assign = v || {}; onTeamChange(); render(); });
     WQ.listen("state", function (v) { g.state = v || { phase: "lobby" }; onStateChange(); render(); });
     WQ.listen("pscores/" + WQ.uid, function (v) { g.pscores = v; render(); });
+    WQ.listen("pics", onPics);
+  }
+
+  // Pictures arrive a little before their question. Once one has loaded, tell the quiz master's screen.
+  function onPics(v) {
+    v = v || {};
+    Object.keys(v).forEach(function (id) {
+      var p = v[id];
+      if (!p || !p.data || picCache[id] || picLoading[id]) return;
+      picLoading[id] = true;
+      var im = new Image();
+      im.onload = function () {
+        delete picLoading[id];
+        picCache[id] = { data: p.data, w: p.w, h: p.h };
+        reportLoaded();
+        render();
+      };
+      im.onerror = function () { delete picLoading[id]; };
+      im.src = p.data;
+    });
+    Object.keys(picCache).forEach(function (id) { if (!v[id] && !(g.state && (g.state.qid === id || g.state.qid + "f" === id))) delete picCache[id]; });
+  }
+  // Tells the quiz master's screen which pictures this phone has ready.
+  var lastReported = null;
+  function reportLoaded() {
+    var list = Object.keys(picCache).sort().join(",").slice(0, 60);
+    if (list === lastReported) return;
+    lastReported = list;
+    L.set(WQ.ref("picsLoaded/" + WQ.uid), list).catch(function () {});
+  }
+  function picSource(pic) {
+    if (!pic) return null;
+    if (pic.src) return { src: pic.src, w: pic.w, h: pic.h };
+    var c = picCache[pic.id];
+    return { data: c ? c.data : null, w: pic.w, h: pic.h };
   }
 
   function showRemoved() {
@@ -188,6 +229,7 @@
   // ---------- Rendering ----------
   var queued = false;
   function render() {
+    if (WQ.pinBusy) return WQ.whenPinIdle(render);
     if (queued) return;
     queued = true;
     setTimeout(function () { queued = false; draw(); }, 16);
@@ -204,11 +246,13 @@
     var body = WQ.clear($("p-body"));
     var fn = {
       lobby: drawLobby, topics: drawTopics, roundIntro: drawRoundIntro, question: drawQuestion, closed: drawQuestion,
+      preview: drawQuestion, ready: drawQuestion,
       reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, final: drawFinal,
       picks: drawPicks, steal: drawSteal, stealReveal: drawStealReveal
     }[s.phase] || drawLobby;
     fn(body, s);
     if (s.phase !== "question" && timer.stop) { timer.stop(); timer.stop = null; timer.qid = null; }
+    if (s.phase !== "preview" && ptimer.stop) { ptimer.stop(); ptimer.stop = null; ptimer.key = null; }
   }
 
   function teamCard() {
@@ -244,13 +288,17 @@
     body.appendChild(h("div", { class: "card" }, [
       h("h2", { text: "Tonight's rounds" }),
       h("ul", { class: "list" }, roundsList().map(function (rd) {
-        return h("li", null, [h("strong", { text: rd.num + "." }), h("span", { style: { flex: "1" }, text: rd.topic }), h("span", { class: "pill", text: WQ.MODE_LABEL[rd.mode] })]);
+        return h("li", null, [h("strong", { text: rd.num + "." }), h("span", { style: { flex: "1" }, text: rd.topic }),
+          h("span", { class: "pill", text: rd.type === "pin" ? "📍 " + WQ.TYPE_LABEL.pin : WQ.MODE_LABEL[rd.mode] })]);
       }))
     ]));
     if (!me.team) body.appendChild(teamCard());
   }
 
-  function modeHelp(mode) {
+  function modeHelp(mode, type) {
+    if (type === "pin") {
+      return "Pin the tail: a picture appears with something to find or put back. Tap where it belongs, drag your pin to adjust, then press Lock in. The closer and quicker, the more points. The first teammate to lock in sets the team's pin, so agree on the spot first!";
+    }
     if (mode !== "agree") {
       return "First answer counts: the first tap from anyone in your team locks in the team's answer, so talk it through before anyone taps! Everyone still answers for their own score.";
     }
@@ -261,16 +309,187 @@
     body.appendChild(h("div", { class: "card center" }, [
       h("div", { class: "muted", text: "Round " + s.round + " of " + s.totalRounds }),
       h("div", { class: "big-number", style: { margin: "8px 0" }, text: s.roundTopic }),
-      h("span", { class: "pill", text: WQ.MODE_LABEL[s.mode] }),
-      h("p", { style: { marginTop: "14px" }, text: modeHelp(s.mode) }),
+      h("span", { class: "pill", text: s.type === "pin" ? "📍 " + WQ.TYPE_LABEL.pin : WQ.MODE_LABEL[s.mode] }),
+      h("p", { style: { marginTop: "14px" }, text: modeHelp(s.mode, s.type) }),
+      s.practice ? h("p", { class: "status", text: "First, a practice with a donkey that doesn't count." }) : null,
       h("p", { class: "muted small", text: s.qCount + (s.qCount === 1 ? " question" : " questions") }),
       roundFlag(s.round)
     ]));
     if (!me.team) body.appendChild(teamCard());
   }
 
+  // The picture board for this question, kept between redraws so pins, zoom and scrolling stay put.
+  function boardFor(s) {
+    var q = s.question || {};
+    if (boardCache.key === s.qid && boardCache.board) return boardCache.board;
+    var isPin = q.kind === "pin";
+    var board = WQ.pinBoard({
+      pic: picSource(q.pic), marker: q.marker || "pin", interactive: isPin, zoom: true,
+      maxH: function () { return window.innerHeight * (isPin ? 0.56 : 0.34); },
+      onChange: function (p) { pinDraft = { qid: s.qid, pin: p }; render(); }
+    });
+    boardCache = { key: s.qid, board: board };
+    return board;
+  }
+
+  function teamFirstPin() {
+    if (g.lock && typeof g.lock.x === "number") return { uid: g.lock.by, x: g.lock.x, y: g.lock.y };
+    var first = null;
+    Object.keys(g.teamAnswers).forEach(function (uid) {
+      var a = g.teamAnswers[uid];
+      if (a && typeof a.x === "number" && (!first || a.at < first.at)) first = { uid: uid, x: a.x, y: a.y, at: a.at };
+    });
+    return first;
+  }
+
+  // Look-first questions: the full picture shows for a few seconds before the item is taken away.
+  function drawFullPicture(body, s) {
+    var q = s.question, again = s.studyRound > 1;
+    var key = s.qid + ":" + s.studyRound;
+    if (ptimer.key !== key) {
+      if (ptimer.stop) ptimer.stop();
+      ptimer.key = key;
+      ptimer.bar = WQ.timerBar();
+      ptimer.bar.classList.add("look");
+      ptimer.stop = typeof s.startAt === "number" ? WQ.countdown(s.startAt, q.showFor || WQ.SHOW_FOR, ptimer.bar.update) : null;
+    }
+    body.appendChild(h("div", { class: "look-banner", text: again ? "👀 Here it is again. Study it carefully!" : "👀 Study the picture! Something is about to disappear." }));
+    body.appendChild(ptimer.bar);
+    if (fullCache.key !== s.qid) {
+      fullCache = { key: s.qid, board: WQ.pinBoard({ pic: picSource(q.full), maxH: function () { return window.innerHeight * 0.56; } }) };
+    }
+    var fs = picSource(q.full);
+    if (fs) fullCache.board.setSrc(fs.data || fs.src);
+    body.appendChild(fullCache.board.el);
+    fullCache.board.refresh();
+  }
+
+  // Ready? Yes/No after studying the picture. You can change your answer until the quiz master moves on.
+  function vote(s, v) {
+    if (!me.team) return;
+    var key = s.qid + ":" + s.studyRound;
+    myVote[key] = v;
+    L.set(WQ.ref("ready/" + s.qid + "/" + WQ.uid), { v: v, r: s.studyRound }).catch(function () { delete myVote[key]; render(); });
+    render();
+  }
+  function drawReady(body, s) {
+    var mine = myVote[s.qid + ":" + s.studyRound];
+    var card = h("div", { class: "card center ready-card" }, [
+      h("div", { class: "big-number", text: "Ready?" }),
+      h("p", { class: "muted", text: "The picture is gone. Are you ready to pin where the missing thing was?" })
+    ]);
+    if (me.team) {
+      card.appendChild(h("div", { class: "ready-btns" }, [
+        h("button", { class: "ready-btn yes" + (mine === "yes" ? " on" : ""), type: "button", onclick: function () { vote(s, "yes"); } }, ["✓ Yes"]),
+        h("button", { class: "ready-btn no" + (mine === "no" ? " on" : ""), type: "button", onclick: function () { vote(s, "no"); } }, ["✗ No, show it again"])
+      ]));
+      card.appendChild(h("p", { class: "muted small", style: { marginTop: "10px" },
+        text: (mine ? "You said " + (mine === "yes" ? "yes" : "no") + ". You can change your mind until the quiz master moves on. " : "") +
+          "If more than half say no, the quiz master can show the picture again." }));
+    } else card.appendChild(h("p", { class: "status warn", text: "You're not in a team yet." }));
+    card.appendChild(h("p", { class: "small", style: { fontWeight: "700" }, text: "✓ " + (s.readyYes || 0) + " ready · ✗ " + (s.readyNo || 0) + " not ready · " + (s.readyOf || 0) + " players" }));
+    body.appendChild(card);
+  }
+
+  function drawPinQuestion(body, s) {
+    var q = s.question;
+    var mine = g.teamAnswers[WQ.uid];
+    var live = s.phase === "question", reveal = s.phase === "reveal";
+    var first = teamFirstPin();
+    body.appendChild(h("div", { class: "muted small", style: { marginTop: "12px" } }, [
+      "Round " + s.round + " · " + s.roundTopic + " · ",
+      s.practice ? h("span", { class: "practice-tag", text: "Practice: doesn't count" }) : "Question " + s.qNum + " of " + s.qCount + roundFlagShort(s.round)
+    ]));
+    body.appendChild(h("h2", { style: { marginTop: "6px" }, text: q.text }));
+    if (s.phase === "preview") return drawFullPicture(body, s);
+    if (s.phase === "ready") return drawReady(body, s);
+    if (live) {
+      if (timer.qid !== s.qid || timer.start !== s.startAt) {
+        if (timer.stop) timer.stop();
+        timer.qid = s.qid;
+        timer.start = s.startAt;
+        timer.bar = WQ.timerBar();
+        timer.stop = typeof s.startAt === "number" ? WQ.countdown(s.startAt, s.seconds, timer.bar.update) : null;
+      }
+      body.appendChild(timer.bar);
+    }
+    var board = boardFor(s), src = picSource(reveal && q.full ? q.full : q.pic);
+    if (src) board.setSrc(src.data || src.src);
+    if (mine) { board.setPin(mine); board.setLocked(true); }
+    else { board.setLocked(false); board.setPin(pinDraft.qid === s.qid ? pinDraft.pin : null); }
+    board.setInteractive(live && !!me.team && !mine);
+    var others = [];
+    if (first && first.uid !== WQ.uid) others.push({ x: first.x, y: first.y, label: "Team: " + firstName(first.uid), marker: q.marker });
+    board.setOthers(others);
+    if (reveal && s.correctPin) board.setReveal({ target: s.correctPin, dots: WQ.arr(s.dots), level: q.level, markerAtTarget: !q.full });
+    body.appendChild(board.el);
+    board.refresh();
+
+    var draft = pinDraft.qid === s.qid ? pinDraft.pin : null;
+    if (live && me.team && !mine) {
+      body.appendChild(h("div", { class: "pin-actions" }, [
+        h("button", { class: "btn btn-primary btn-big btn-block", type: "button", disabled: !draft, onclick: function () { lockInPin(s); } },
+          [draft ? "Lock in" : "Tap the picture to place your pin"]),
+        h("p", { class: "pin-help", text: draft ? "Drag your pin to adjust it, or tap somewhere else. Use + to zoom in." : "Use + to zoom in for a closer look." })
+      ]));
+    }
+
+
+    var status = null;
+    if (!me.team) status = h("div", { class: "status warn", text: "You're not in a team yet, so you can't answer. The quiz master will put you in one." });
+    else if (reveal) status = drawPinRevealStatus(s, mine);
+    else if (s.phase === "closed") status = h("div", { class: "status", text: "Time's up! Waiting for the answer…" });
+    else if (first) {
+      status = h("div", { class: "status ok", text: first.uid === WQ.uid
+        ? "You locked in first, so your pin is the team's pin."
+        : nameOf(first.uid) + " locked in first, so the pin marked “Team: " + firstName(first.uid) + "” is your team's pin. " + (mine ? "Your own pin is locked in too." : "Place your own pin for personal points.") });
+    } else status = h("div", { class: "status", text: "The first teammate to lock in sets the team's pin, so agree on the spot before anyone locks in!" });
+    if (status) body.appendChild(status);
+    if (flashMsg) body.appendChild(h("div", { class: "status bad", text: flashMsg }));
+  }
+
+  function lockInPin(s) {
+    var p = pinDraft.qid === s.qid ? pinDraft.pin : null;
+    if (!p || !me.team || g.teamAnswers[WQ.uid]) return;
+    flashMsg = "";
+    L.set(WQ.ref("answers/" + s.qid + "/" + me.team + "/" + WQ.uid), { x: p.x, y: p.y, at: L.serverTimestamp() })
+      .catch(function () { flashMsg = "Your pin didn't go through. Time may have run out."; render(); });
+  }
+
+  function pinText(r) {
+    if (!r || r.how === "none") return "No pin";
+    if (r.acc >= 1) return "🎯 Bullseye! +" + WQ.fmt(r.points);
+    if (r.acc > 0) return WQ.pct(r.acc) + " accurate · +" + WQ.fmt(r.points);
+    return "Too far away · 0";
+  }
+  function drawPinRevealStatus(s, mine) {
+    var wrap = h("div");
+    if (s.practice) {
+      var txt = "You didn't place a pin in time.";
+      if (mine && s.correctPin) {
+        var pic = s.question.pic || { w: 4, h: 3 };
+        var acc = WQ.pinAccuracy(WQ.pinDistance(mine, s.correctPin, pic.w / pic.h), s.question.level);
+        txt = acc >= 1 ? "🎯 Bullseye! Spot on." : acc > 0 ? "Your pin was " + WQ.pct(acc) + " accurate." : "Too far away this time.";
+      }
+      wrap.appendChild(h("div", { class: "status" }, [h("strong", { text: txt }), " That was just practice. The glowing tail shows where it goes, and the dots are everyone's pins. The real questions are next!"]));
+      return wrap;
+    }
+    var mineRes = g.pscores && g.pscores.q && g.pscores.q[s.qid];
+    var teamRes = g.results && g.results.q && g.results.q[s.qid];
+    var youTxt = mineRes ? pinText(mineRes) : (mine ? "Working it out…" : "You didn't place a pin");
+    var by = teamRes && teamRes.by ? (teamRes.by === WQ.uid ? "you" : nameOf(teamRes.by)) : "";
+    wrap.appendChild(h("div", { class: "score-grid" }, [
+      h("div", { class: "score-box" }, [h("div", { class: "label", text: "You" }), h("div", { class: "val", style: { fontSize: "1.1rem" }, text: youTxt })]),
+      h("div", { class: "score-box" }, [h("div", { class: "label", text: "Your team" }), h("div", { class: "val", style: { fontSize: "1.1rem" }, text: teamRes ? pinText(teamRes) : "…" }),
+        by ? h("div", { class: "small muted", text: "Team pin: " + by }) : null])
+    ]));
+    wrap.appendChild(h("p", { class: "muted small", style: { marginTop: "8px" }, text: "Gold ring: the right spot. Dots: everyone's pins." }));
+    return wrap;
+  }
+
   function drawQuestion(body, s) {
     var q = s.question || { text: "", options: [] };
+    if (q.kind === "pin") return drawPinQuestion(body, s);
     var mine = g.teamAnswers[WQ.uid];
     var cap = captainUid();
     var capAns = cap ? g.teamAnswers[cap] : null;
@@ -300,6 +519,13 @@
         timer.stop = typeof s.startAt === "number" ? WQ.countdown(s.startAt, s.seconds, timer.bar.update) : null;
       }
       body.appendChild(timer.bar);
+    }
+
+    if (q.pic) {
+      var pboard = boardFor(s), psrc = picSource(q.pic);
+      if (psrc) pboard.setSrc(psrc.data || psrc.src);
+      body.appendChild(pboard.el);
+      pboard.refresh();
     }
 
     var canTap = live && me.team && !(s.mode !== "agree" && mine) && !(s.mode === "agree" && lock);

@@ -40,7 +40,7 @@
               ".read": "auth != null && root.child('games/' + $code + '/assign/' + auth.uid + '/team').val() === $team",
               "$uid": {
                 ".write": "auth != null && auth.uid === $uid && root.child('games/' + $code + '/assign/' + auth.uid + '/team').val() === $team && root.child('games/' + $code + '/state/qid').val() === $qid && root.child('games/' + $code + '/state/phase').val() === 'question' && now <= root.child('games/' + $code + '/state/startAt').val() + root.child('games/' + $code + '/state/seconds').val() * 1000 + 1500 && ((root.child('games/' + $code + '/state/mode').val() === 'first' && !data.exists()) || (root.child('games/' + $code + '/state/mode').val() === 'agree' && !root.child('games/' + $code + '/locks/' + $qid + '/' + $team).exists()))",
-                ".validate": "newData.hasChildren(['opt', 'at']) && newData.child('at').val() === now && newData.child('opt').isString() && newData.child('opt').val().matches(/^[A-D]$/)"
+                ".validate": "newData.hasChildren(['at']) && newData.child('at').val() === now && ((root.child('games/' + $code + '/state/question/kind').val() !== 'pin' && newData.child('opt').isString() && newData.child('opt').val().matches(/^[A-D]$/)) || (root.child('games/' + $code + '/state/question/kind').val() === 'pin' && newData.child('x').isNumber() && newData.child('y').isNumber() && newData.child('x').val() >= 0 && newData.child('x').val() <= 100 && newData.child('y').val() >= 0 && newData.child('y').val() <= 100))"
               }
             }
           }
@@ -77,6 +77,28 @@
             ".read": "auth != null && root.child('games/' + $code + '/assign/' + auth.uid + '/team').val() === $team",
             ".write": "auth != null && root.child('games/' + $code + '/assign/' + auth.uid + '/team').val() === $team && root.child('games/' + $code + '/assign/' + auth.uid + '/captain').val() === true && root.child('games/' + $code + '/state/phase').val() === 'steal'",
             ".validate": "newData.hasChildren(['target', 'round']) && newData.child('target').isString() && newData.child('target').val() !== $team && newData.child('round').isNumber()"
+          }
+        },
+        "pics": {
+          ".read": "auth != null",
+          ".write": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid"
+        },
+        "picsLoaded": {
+          ".read": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          ".write": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "newData.isString() && newData.val().length <= 60"
+          }
+        },
+        "ready": {
+          ".read": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          ".write": "auth != null && root.child('games/' + $code + '/meta/hostUid').val() === auth.uid",
+          "$qid": {
+            "$uid": {
+              ".write": "auth != null && auth.uid === $uid && root.child('games/' + $code + '/state/qid').val() === $qid && root.child('games/' + $code + '/state/phase').val() === 'ready'",
+              ".validate": "newData.hasChildren(['v', 'r']) && newData.child('v').isString() && newData.child('v').val().matches(/^(yes|no)$/) && newData.child('r').val() === root.child('games/' + $code + '/state/studyRound').val()"
+            }
           }
         },
         "pscores": {

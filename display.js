@@ -4,6 +4,8 @@
   var $ = WQ.$, h = WQ.h;
   var g = { meta: null, state: null, players: {}, assign: {} };
   var timer = { qid: null, bar: null, stop: null };
+  var picCache = {}, picLoading = {}, boardCache = { key: null, board: null }, fullCache = { key: null, board: null };
+  var ptimer = { key: null, bar: null, stop: null };
 
   $("d-full").addEventListener("click", function () {
     var el = document.documentElement;
@@ -31,6 +33,36 @@
     WQ.listen("state", function (v) { g.state = v || { phase: "lobby" }; render(); });
     WQ.listen("players", function (v) { g.players = v || {}; render(); });
     WQ.listen("assign", function (v) { g.assign = v || {}; render(); });
+    WQ.listen("pics", function (v) {
+      v = v || {};
+      Object.keys(v).forEach(function (id) {
+        var p = v[id];
+        if (!p || !p.data || picCache[id] || picLoading[id]) return;
+        picLoading[id] = true;
+        var im = new Image();
+        im.onload = function () { delete picLoading[id]; picCache[id] = { data: p.data, w: p.w, h: p.h }; render(); };
+        im.onerror = function () { delete picLoading[id]; };
+        im.src = p.data;
+      });
+      Object.keys(picCache).forEach(function (id) { if (!v[id] && !(g.state && (g.state.qid === id || g.state.qid + "f" === id))) delete picCache[id]; });
+    });
+  }
+
+  function picSource(pic) {
+    if (!pic) return null;
+    if (pic.src) return { src: pic.src, w: pic.w, h: pic.h };
+    var c = picCache[pic.id];
+    return { data: c ? c.data : null, w: pic.w, h: pic.h };
+  }
+  function boardFor(s) {
+    var q = s.question || {};
+    if (boardCache.key === s.qid && boardCache.board) return boardCache.board;
+    var isPin = q.kind === "pin";
+    var board = WQ.pinBoard({ pic: picSource(q.pic), marker: q.marker || "pin",
+      maxH: function () { return window.innerHeight * (isPin ? 0.74 : 0.3); },
+      maxW: function () { return window.innerWidth * (isPin ? 0.58 : 0.8); } });
+    boardCache = { key: s.qid, board: board };
+    return board;
   }
 
   var queued = false;
@@ -63,11 +95,13 @@
     var main = WQ.clear($("d-main"));
     var fn = {
       lobby: drawLobby, topics: drawTopics, roundIntro: drawRoundIntro, question: drawQuestion, closed: drawQuestion,
+      preview: drawQuestion, ready: drawQuestion,
       reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, final: drawFinal,
       picks: drawPicks, steal: drawSteal, stealReveal: drawStealReveal
     }[s.phase] || drawLobby;
     fn(main, s);
     if (s.phase !== "question" && timer.stop) { timer.stop(); timer.stop = null; timer.qid = null; }
+    if (s.phase !== "preview" && ptimer.stop) { ptimer.stop(); ptimer.stop = null; ptimer.key = null; }
   }
 
   function drawLobby(main) {
@@ -99,35 +133,111 @@
   function drawTopics(main) {
     main.appendChild(h("h1", { text: "Tonight's rounds" }));
     main.appendChild(h("div", { class: "topics" }, roundsList().map(function (rd) {
-      return h("div", null, [h("span", { class: "num", text: rd.num }), rd.topic, " ", h("span", { class: "pill", text: WQ.MODE_LABEL[rd.mode] })]);
+      return h("div", null, [h("span", { class: "num", text: rd.num }), rd.topic, " ", h("span", { class: "pill", text: rd.type === "pin" ? "📍 " + WQ.TYPE_LABEL.pin : WQ.MODE_LABEL[rd.mode] })]);
     })));
   }
 
   function drawRoundIntro(main, s) {
-    var help = s.mode !== "agree" ? "The first tap in each team locks in the team's answer, so talk it through before anyone taps! Everyone answers for their own score too."
+    var help = s.type === "pin" ? "A picture appears with something to find or put back. Tap where it belongs on your phone, drag to adjust, then press Lock in. The closer and quicker, the more points. The first teammate to lock in sets the team's pin, so agree first!"
+      : s.mode !== "agree" ? "The first tap in each team locks in the team's answer, so talk it through before anyone taps! Everyone answers for their own score too."
       : "Each team's answer locks in when everyone picks the same option. If time runs out, the captain's pick counts for half points.";
     main.appendChild(h("div", { class: "center" }, [
       h("h2", { text: "Round " + s.round }),
       h("h1", { style: { fontSize: "4em" }, text: s.roundTopic }),
-      h("p", null, [h("span", { class: "pill", style: { fontSize: "1em" }, text: WQ.MODE_LABEL[s.mode] })]),
-      h("p", { class: "muted", style: { maxWidth: "40em", margin: "2vh auto 0" }, text: help })
+      h("p", null, [h("span", { class: "pill", style: { fontSize: "1em" }, text: s.type === "pin" ? "📍 " + WQ.TYPE_LABEL.pin + " · " + WQ.MODE_LABEL.first : WQ.MODE_LABEL[s.mode] })]),
+      h("p", { class: "muted", style: { maxWidth: "40em", margin: "2vh auto 0" }, text: help }),
+      s.practice ? h("p", { class: "gold-text", style: { fontSize: "1.2em", marginTop: "2vh" }, text: "First, a practice with a donkey. It doesn't count!" }) : null
     ]));
+  }
+
+  function questionTimer(s) {
+    if (timer.qid !== s.qid || timer.start !== s.startAt) {
+      if (timer.stop) timer.stop();
+      timer.qid = s.qid;
+      timer.start = s.startAt;
+      timer.bar = WQ.timerBar();
+      timer.stop = typeof s.startAt === "number" ? WQ.countdown(s.startAt, s.seconds, timer.bar.update) : null;
+    }
+    return timer.bar;
+  }
+
+  // After studying: everyone answers Ready? on their phone.
+  function drawReady(main, s) {
+    var yes = s.readyYes || 0, no = s.readyNo || 0, of = s.readyOf || 0, waiting = Math.max(0, of - yes - no);
+    main.appendChild(h("div", { class: "center" }, [
+      h("div", { class: "muted", text: s.roundTopic + " · Question " + s.qNum + " of " + s.qCount }),
+      h("h1", { style: { fontSize: "5em", margin: ".2em 0" }, text: "Ready?" }),
+      h("h2", { text: "Answer Yes or No on your phone" }),
+      h("div", { class: "ready-tally" }, [
+        h("span", { class: "ready-chip yes", text: "✓ " + yes + " ready" }),
+        h("span", { class: "ready-chip no", text: "✗ " + no + " not ready" }),
+        h("span", { class: "ready-chip", text: waiting + " still to answer" })
+      ]),
+      h("p", { class: "muted", style: { marginTop: "3vh" }, text: "If more than half say no, the picture can be shown again." })
+    ]));
+  }
+
+  function drawPinQuestion(main, s) {
+    var q = s.question, live = s.phase === "question", reveal = s.phase === "reveal";
+    var looking = s.phase === "preview";
+    if (s.phase === "ready") return drawReady(main, s);
+    var left = h("div", null, [
+      h("div", { class: "muted", style: { marginBottom: "1vh" }, text: s.roundTopic + " · " + (s.practice ? "Practice (doesn't count)" : "Question " + s.qNum + " of " + s.qCount) }),
+      h("div", { class: "question-text", text: q.text })
+    ]);
+    if (looking) {
+      var key = s.qid + ":" + s.studyRound;
+      if (ptimer.key !== key) {
+        if (ptimer.stop) ptimer.stop();
+        ptimer.key = key;
+        ptimer.bar = WQ.timerBar();
+        ptimer.bar.classList.add("look");
+        ptimer.stop = typeof s.startAt === "number" ? WQ.countdown(s.startAt, q.showFor || WQ.SHOW_FOR, ptimer.bar.update) : null;
+      }
+      left.appendChild(h("div", { class: "look-banner", text: s.studyRound > 1 ? "👀 Here it is again. Study it carefully!" : "👀 Study the picture! Something is about to disappear…" }));
+      left.appendChild(ptimer.bar);
+    } else if (live) {
+      left.appendChild(questionTimer(s));
+      left.appendChild(h("div", { class: "locked", text: "Teams locked in: " + (s.lockedCount || 0) + " of " + (s.teamCount || 0) }));
+      left.appendChild(h("p", { class: "muted", style: { marginTop: "2vh" }, text: "Place your pin on your phone, then press Lock in." }));
+
+    } else if (s.phase === "closed") {
+      left.appendChild(h("div", { class: "locked", text: "Time's up!" }));
+    } else if (reveal) {
+      var dots = WQ.arr(s.dots), bulls = s.bulls || 0;
+      left.appendChild(h("div", { class: "pin-stats", text: dots.length + (dots.length === 1 ? " pin" : " pins") + (bulls ? " · 🎯 " + bulls + (bulls === 1 ? " bullseye" : " bullseyes") : "") }));
+      left.appendChild(h("p", { class: "muted", text: "The gold ring is the right spot. Check your phone for your points." }));
+    }
+    var board;
+    if (looking) {
+      if (fullCache.key !== s.qid) fullCache = { key: s.qid, board: WQ.pinBoard({ pic: picSource(q.full),
+        maxH: function () { return window.innerHeight * 0.74; }, maxW: function () { return window.innerWidth * 0.58; } }) };
+      board = fullCache.board;
+      var fsrc = picSource(q.full);
+      if (fsrc) board.setSrc(fsrc.data || fsrc.src);
+    } else {
+      board = boardFor(s);
+      var src = picSource(reveal && q.full ? q.full : q.pic);
+      if (src) board.setSrc(src.data || src.src);
+      if (reveal && s.correctPin) board.setReveal({ target: s.correctPin, dots: WQ.arr(s.dots), level: q.level, markerAtTarget: !q.full });
+    }
+    main.appendChild(h("div", { class: "pin-layout" }, [left, h("div", null, [board.el])]));
+    board.refresh();
   }
 
   function drawQuestion(main, s) {
     var q = s.question || { text: "", options: [] };
+    if (q.kind === "pin") return drawPinQuestion(main, s);
     var live = s.phase === "question", reveal = s.phase === "reveal";
     main.appendChild(h("div", { class: "muted", style: { marginBottom: "1vh" },
       text: s.roundTopic + " · Question " + s.qNum + " of " + s.qCount + " · " + WQ.MODE_LABEL[s.mode] }));
     main.appendChild(h("div", { class: "question-text", text: q.text }));
-    if (live) {
-      if (timer.qid !== s.qid) {
-        if (timer.stop) timer.stop();
-        timer.qid = s.qid;
-        timer.bar = WQ.timerBar();
-        timer.stop = typeof s.startAt === "number" ? WQ.countdown(s.startAt, s.seconds, timer.bar.update) : null;
-      }
-      main.appendChild(timer.bar);
+    if (live) main.appendChild(questionTimer(s));
+    if (q.pic) {
+      var board = boardFor(s), src = picSource(q.pic);
+      if (src) board.setSrc(src.data || src.src);
+      main.appendChild(h("div", { class: "pic-above" }, [board.el]));
+      board.refresh();
     }
     main.appendChild(h("div", { class: "opts" }, WQ.arr(q.options).map(function (text, i) {
       var L_ = WQ.LETTERS[i];
