@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="2 4 656 994" width="656" height="994">
+  <!-- A big Christmas tree with a star, for the resize practice. An original outline. Tinted on screen. -->
+  <g opacity=".3">
+    <path d="M330 10 L344 50 L388 50 L352 76 L366 118 L330 92 L294 118 L308 76 L272 50 L316 50 Z"/>
+    <path d="M330 100 L404 250 L376 246 L470 420 L432 414 L540 610 L496 604 L620 820 L580 814 L652 930 L8 930 L80 814 L40 820 L164 604 L120 610 L228 414 L190 420 L284 246 L256 250 Z"/>
+    <rect x="284" y="926" width="92" height="66"/>
+  </g>
+  <g fill="none" stroke="#000" stroke-width="12" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M330 10 L344 50 L388 50 L352 76 L366 118 L330 92 L294 118 L308 76 L272 50 L316 50 Z"/>
+    <path d="M330 100 L404 250 L376 246 L470 420 L432 414 L540 610 L496 604 L620 820 L580 814 L652 930 L8 930 L80 814 L40 820 L164 604 L120 610 L228 414 L190 420 L284 246 L256 250 Z"/>
+    <rect x="284" y="930" width="92" height="62"/>
+    <path d="M276 300 C320 330 360 320 392 290"/>
+    <path d="M210 480 C300 530 380 520 456 462"/>
+    <path d="M150 680 C280 740 410 730 520 660"/>
+    <path d="M96 870 C260 920 420 914 572 856"/>
+  </g>
+  <g>
+    <circle cx="300" cy="316" r="10"/><circle cx="368" cy="306" r="10"/>
+    <circle cx="246" cy="500" r="10"/><circle cx="330" cy="516" r="10"/><circle cx="420" cy="490" r="10"/>
+    <circle cx="190" cy="700" r="10"/><circle cx="290" cy="724" r="10"/><circle cx="390" cy="722" r="10"/><circle cx="480" cy="690" r="10"/>
+    <circle cx="140" cy="884" r="10"/><circle cx="250" cy="906" r="10"/><circle cx="370" cy="908" r="10"/><circle cx="490" cy="888" r="10"/>
+  </g>
+</svg>

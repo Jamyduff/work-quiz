@@ -144,13 +144,22 @@
 
     var rc = columns(roundRows[0], { round: [["round"], 0], topic: [["topic"], 1], type: [["roundtype", "type"], null], mode: [["howteamsanswer", "mode"], 2] });
     var rounds = {};
+    var typeOf = function (t) {
+      if (/pin/i.test(t)) return "pin";
+      if (/year/i.test(t)) return "year";
+      if (/order/i.test(t)) return "order";
+      if (/resiz|size|scale/i.test(t)) return "resize";
+      return "mc";
+    };
+    var whyFirst = { pin: "teammates can't all tap exactly the same spot", year: "teammates would all have to dial exactly the same year",
+      order: "teammates would all have to put everything in exactly the same order", resize: "teammates would all have to choose exactly the same size" };
     roundRows.slice(1).forEach(function (r) {
       var num = parseInt(cell(r, rc.round), 10);
       if (!(num >= 1 && num <= 10)) return;
-      var type = /pin/i.test(cell(r, rc.type)) ? "pin" : "mc";
+      var type = typeOf(cell(r, rc.type));
       var mode = /agree/i.test(cell(r, rc.mode)) ? "agree" : "first";
-      if (type === "pin" && mode === "agree") {
-        warnings.push("Round " + num + " is a pin round, so it will use First answer counts (teammates can't all tap exactly the same spot).");
+      if (WQ.FIRST_ONLY[type] && mode === "agree") {
+        warnings.push("Round " + num + " is " + (/^[AEIOU]/.test(WQ.TYPE_LABEL[type]) ? "an " : "a ") + WQ.TYPE_LABEL[type] + " round, so it will use First answer counts (" + whyFirst[type] + ").");
         mode = "first";
       }
       rounds[num] = { num: num, topic: cell(r, rc.topic), type: type, mode: mode, questions: [] };
@@ -160,8 +169,13 @@
       round: [["round"], 0], question: [["question"], 1], a: [["optiona"], 2], b: [["optionb"], 3], c: [["optionc"], 4], d: [["optiond"], 5],
       answer: [["correctanswer", "answer"], 6], seconds: [["seconds"], 7], picture: [["picture"], 8],
       tx: [["targetx"], null], ty: [["targety"], null], level: [["difficulty"], null], marker: [["marker"], null],
-      full: [["showfirst"], null], showFor: [["showfor"], null]
+      full: [["showfirst"], null], showFor: [["showfor"], null],
+      startYear: [["startyear"], null], listen: [["listenfirst", "listen"], null],
+      topLabel: [["toplabel"], null], bottomLabel: [["bottomlabel"], null],
+      moving: [["resizepicture"], null], size: [["picturesize"], null], movingSize: [["resizepicturesize", "resizesize"], null],
+      note: [["revealnote", "note"], null]
     });
+    var defSeconds = { mc: 20, pin: WQ.PIN_SECONDS, year: WQ.YEAR_SECONDS, order: WQ.ORDER_SECONDS, resize: WQ.RESIZE_SECONDS };
     qRows.slice(1).forEach(function (r, i) {
       var rowNo = i + 2;
       var text = cell(r, qc.question);
@@ -169,14 +183,48 @@
       var num = parseInt(cell(r, qc.round), 10);
       if (!(num >= 1 && num <= 10)) { errors.push("Questions row " + rowNo + ": the round must be a number from 1 to 10."); return; }
       if (!rounds[num]) rounds[num] = { num: num, topic: "", type: "mc", mode: "first", questions: [] };
-      var isPin = rounds[num].type === "pin";
+      var type = rounds[num].type, isPin = type === "pin";
       var picture = cell(r, qc.picture);
       var secsText = cell(r, qc.seconds);
-      var defSecs = isPin ? WQ.PIN_SECONDS : 20;
+      var defSecs = defSeconds[type] || 20;
       var seconds = secsText ? parseInt(secsText, 10) : defSecs;
       if (!(seconds >= 5 && seconds <= 120)) {
         warnings.push("Questions row " + rowNo + ": seconds should be between 5 and 120, so " + defSecs + " will be used.");
         seconds = defSecs;
+      }
+      var note = cell(r, qc.note);
+      var levelOf = function () {
+        var lvText = cell(r, qc.level).toLowerCase(), level = "medium";
+        if (/^e/.test(lvText)) level = "easy"; else if (/^h/.test(lvText)) level = "hard";
+        else if (lvText && !/^m/.test(lvText)) warnings.push("Questions row " + rowNo + ": difficulty should be Easy, Medium or Hard, so Medium will be used.");
+        return level;
+      };
+      if (type === "year") {
+        var ansText = cell(r, qc.answer).replace(/[^\d-]/g, ""), year = parseInt(ansText, 10);
+        if (!(year >= 1 && year <= 2200) || String(year) !== ansText) { errors.push("Questions row " + rowNo + ": a Guess the year question needs the year in the Correct answer column (e.g. 1994)."); return; }
+        var syText = cell(r, qc.startYear), start = syText ? parseInt(syText.replace(/[^\d]/g, ""), 10) : WQ.YEAR_START;
+        if (!(start >= 1 && start <= 2200)) { warnings.push("Questions row " + rowNo + ": the start year isn't a year, so " + WQ.YEAR_START + " will be used."); start = WQ.YEAR_START; }
+        var range = WQ.yearRange(start);
+        if (year < range.min || year > range.max) { errors.push("Questions row " + rowNo + ": the wheel will run from " + range.min + " to " + range.max + ", which doesn't include " + year + ". Set a Start year closer to the answer."); return; }
+        var lt = cell(r, qc.listen).toLowerCase();
+        rounds[num].questions.push({ kind: "year", text: text, answer: year, start: start, listen: !/^(n|0|false)/.test(lt), seconds: seconds, note: note });
+        return;
+      }
+      if (type === "order") {
+        var items = [cell(r, qc.a), cell(r, qc.b), cell(r, qc.c), cell(r, qc.d)];
+        if (items.some(function (x) { return !x; })) { errors.push("Questions row " + rowNo + ": an Ordering question needs four things in Options A to D, written in the right order (A first)."); return; }
+        var seen = {};
+        if (items.some(function (x) { var k = x.toLowerCase(); if (seen[k]) return true; seen[k] = true; return false; })) { errors.push("Questions row " + rowNo + ": the four things in an Ordering question must all be different."); return; }
+        rounds[num].questions.push({ kind: "order", text: text, items: items, top: cell(r, qc.topLabel) || "First", bottom: cell(r, qc.bottomLabel) || "Last", seconds: seconds, note: note });
+        return;
+      }
+      if (type === "resize") {
+        var moving = cell(r, qc.moving);
+        if (!picture || !moving) { errors.push("Questions row " + rowNo + ": a Resize question needs two pictures: Picture (the blue one that stays put) and Resize picture (the red one players resize)."); return; }
+        var sz = num01(cell(r, qc.size)), msz = num01(cell(r, qc.movingSize));
+        if (!(sz > 0) || !(msz > 0)) { errors.push("Questions row " + rowNo + ": a Resize question needs Picture size and Resize picture size: the real size of each thing's longest side, in the same units (e.g. metres)."); return; }
+        rounds[num].questions.push({ kind: "resize", text: text, picture: picture, moving: moving, size: sz, movingSize: msz, level: levelOf(), seconds: seconds, note: note });
+        return;
       }
       if (isPin) {
         if (!picture) { errors.push("Questions row " + rowNo + ": a pin question needs a picture file name in the Picture column."); return; }
@@ -191,7 +239,7 @@
         var mkText = cell(r, qc.marker), marker = WQ.markerName(mkText) || "pin";
         if (mkText && !WQ.markerName(mkText)) warnings.push("Questions row " + rowNo + ": the marker should be Pin, Tail, Carrot or Earth, so Pin will be used.");
         if ([qc.a, qc.b, qc.c, qc.d, qc.answer].some(function (k) { return cell(r, k); })) warnings.push("Questions row " + rowNo + ": the options and correct answer are ignored in pin rounds.");
-        var pq = { kind: "pin", text: text, picture: picture, target: { x: tx, y: ty }, level: level, marker: marker, seconds: seconds };
+        var pq = { kind: "pin", text: text, picture: picture, target: { x: tx, y: ty }, level: level, marker: marker, seconds: seconds, note: note };
         var full = cell(r, qc.full);
         if (full) {
           var sfText = cell(r, qc.showFor), showFor = sfText ? parseInt(sfText, 10) : WQ.SHOW_FOR;
@@ -214,7 +262,7 @@
       if (idx < 0) { errors.push("Questions row " + rowNo + ": the correct answer must be A, B, C or D."); return; }
       if (idx >= count) { errors.push("Questions row " + rowNo + ": the correct answer is " + ans + ", but option " + ans + " is empty."); return; }
       if (cell(r, qc.full)) warnings.push("Questions row " + rowNo + ": Show first is only used in pin rounds, so it will be ignored.");
-      rounds[num].questions.push({ text: text, options: raw.slice(0, count), answer: ans, seconds: seconds, picture: picture });
+      rounds[num].questions.push({ text: text, options: raw.slice(0, count), answer: ans, seconds: seconds, picture: picture, note: note });
     });
 
     var list = Object.keys(rounds).map(Number).sort(function (a, b) { return a - b; }).map(function (n) { return rounds[n]; })
@@ -233,7 +281,7 @@
     });
     if (renumbered) warnings.push("Some round numbers were skipped, so the rounds have been numbered 1 to " + list.length + " in order.");
     if (!list.length) errors.push("No questions found on the Questions sheet.");
-    else if (list.length !== 10) warnings.push("There are " + list.length + " rounds with questions. Standings appear after rounds 4 and 9, and the doubles and steals game expects 10 rounds.");
+    else if (!WQ.dpsAllowed(list.length)) warnings.push("There are " + list.length + " rounds with questions. The doubles, poison and steals game needs 9 or 10 rounds.");
     return { quiz: { title: title, teams: teams, rounds: list }, errors: errors, warnings: warnings };
   }
 
@@ -243,27 +291,33 @@
   var picData = {};    // picture file name (lower case) → { data, w, h }
   var picsSent = {};   // question id → true, for pictures already sent to phones this session
   var lastSentPic = null;
+  // Resize pictures are kept see-through and trimmed to the drawing's edges, so they're stored under "outline:" + name.
+  var OUTLINE = "outline:";
   function picKey(name) { return String(name || "").trim().toLowerCase(); }
-  function localPic(name) { return picData[picKey(name)] || null; }
-  function picDims(name) { var d = localPic(name) || WQ.builtinPic(name); return d ? { w: d.w, h: d.h } : { w: 4, h: 3 }; }
+  function bareKey(k) { return k.indexOf(OUTLINE) === 0 ? k.slice(OUTLINE.length) : k; }
+  function localPic(name, outline) { return picData[(outline ? OUTLINE : "") + picKey(name)] || null; }
+  function picDims(name, outline) { var d = localPic(name, outline) || WQ.builtinPic(name); return d ? { w: d.w, h: d.h } : { w: 4, h: 3 }; }
   function neededPics(qz) {
     var out = [];
+    var add = function (k) { if (out.indexOf(k) < 0) out.push(k); };
     ((qz || quiz) ? (qz || quiz).rounds : []).forEach(function (rd) {
       rd.questions.forEach(function (q) {
-        [q.picture, q.full].forEach(function (nm) { if (nm && out.indexOf(picKey(nm)) < 0) out.push(picKey(nm)); });
+        if (q.kind === "resize") { [q.picture, q.moving].forEach(function (nm) { if (nm) add(OUTLINE + picKey(nm)); }); return; }
+        [q.picture, q.full].forEach(function (nm) { if (nm) add(picKey(nm)); });
       });
     });
     return out;
   }
   function missingPics(qz) {
-    return neededPics(qz).filter(function (k) { return !picData[k] && !WQ.builtinPic(k); });
+    return neededPics(qz).filter(function (k) { return !picData[k] && !WQ.builtinPic(bareKey(k)); });
   }
   // What a phone needs to show a question's picture: a website file, or the id of a picture sent through Firebase.
+  // which: "full" (the study picture), "moving" (the red resize picture) or nothing (the main picture).
   function questionPic(q, qid, which) {
-    var name = which === "full" ? q && q.full : q && q.picture;
+    var name = which === "full" ? q && q.full : which === "moving" ? q && q.moving : q && q.picture;
     if (!name) return null;
-    var id = which === "full" ? qid + "f" : qid;
-    var d = localPic(name);
+    var id = which === "full" ? qid + "f" : which === "moving" ? qid + "m" : qid;
+    var d = localPic(name, q.kind === "resize");
     if (d) return { id: id, w: d.w, h: d.h };
     var b = WQ.builtinPic(name);
     return b ? { src: b.src, w: b.w, h: b.h } : { id: id, w: 4, h: 3 };
@@ -290,17 +344,55 @@
       img.src = url;
     });
   }
+  // Resize pictures: kept see-through (PNG), trimmed to the edges of the drawing so its height is the thing's height.
+  function processOutline(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth || 600, ht = img.naturalHeight || 900, svg = /svg/i.test(file.type) || /\.svg$/i.test(file.name);
+        var sc = 1000 / Math.max(w, ht);
+        if (!svg) sc = Math.min(1, sc);
+        var cw = Math.max(1, Math.round(w * sc)), ch = Math.max(1, Math.round(ht * sc));
+        var c = document.createElement("canvas");
+        c.width = cw; c.height = ch;
+        var ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0, cw, ch);
+        URL.revokeObjectURL(url);
+        var px = ctx.getImageData(0, 0, cw, ch).data, x0 = cw, y0 = ch, x1 = -1, y1 = -1;
+        for (var y = 0; y < ch; y++) for (var x = 0; x < cw; x++) if (px[(y * cw + x) * 4 + 3] > 16) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+        if (x1 < 0) return reject(new Error(file.name + " looks empty."));
+        var corner = function (x, y) { return px[(y * cw + x) * 4 + 3]; };
+        var opaque = corner(0, 0) > 250 && corner(cw - 1, 0) > 250 && corner(0, ch - 1) > 250 && corner(cw - 1, ch - 1) > 250;
+        var tw = x1 - x0 + 1, th = y1 - y0 + 1;
+        var out = document.createElement("canvas");
+        out.width = tw; out.height = th;
+        out.getContext("2d").drawImage(c, x0, y0, tw, th, 0, 0, tw, th);
+        var data = out.toDataURL("image/png");
+        if (data.length > 600000) {
+          var f = 0.7, small = document.createElement("canvas");
+          small.width = Math.round(tw * f); small.height = Math.round(th * f);
+          small.getContext("2d").drawImage(out, 0, 0, small.width, small.height);
+          data = small.toDataURL("image/png"); tw = small.width; th = small.height;
+        }
+        resolve({ data: data, w: tw, h: th, opaque: opaque });
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error("Couldn't open " + file.name + " as a picture.")); };
+      img.src = url;
+    });
+  }
   // Match chosen files to the picture names in the quiz (case doesn't matter; the extension can be left off in the quiz file).
   function loadPictureFiles(files, qz) {
     var wanted = neededPics(qz), jobs = [], found = [];
     var list = Array.prototype.slice.call(files || []).filter(function (f) { return /^image\//.test(f.type) || /\.(jpe?g|png|gif|webp|svg|bmp)$/i.test(f.name); });
     wanted.forEach(function (k) {
-      var stem = k.replace(/\.[^.]+$/, "");
-      var f = list.filter(function (x) { return x.name.toLowerCase() === k; })[0] ||
+      var name = bareKey(k), stem = name.replace(/\.[^.]+$/, "");
+      var f = list.filter(function (x) { return x.name.toLowerCase() === name; })[0] ||
         list.filter(function (x) { return x.name.toLowerCase().replace(/\.[^.]+$/, "") === stem; })[0];
       if (!f) return;
       found.push(k);
-      jobs.push(processPicture(f).then(function (d) { picData[k] = d; }));
+      jobs.push((k === name ? processPicture(f) : processOutline(f)).then(function (d) { picData[k] = d; }));
     });
     return Promise.all(jobs.map(function (j) { return j.catch(function (e) { return e; }); })).then(function (res) {
       return { found: found, problems: res.filter(function (x) { return x instanceof Error; }).map(function (e) { return e.message; }) };
@@ -339,24 +431,28 @@
     }
   };
 
-  // Sends a question's picture (and its "show first" full picture, if it has one) to phones.
+  // Sends a question's picture (and its "show first" full picture, or its red resize picture) to phones.
   function sendPic(r, n) {
     var rd = roundOf(r), q = rd && rd.questions[n - 1];
     if (!q || !q.picture) return Promise.resolve();
-    var qid = "r" + r + "q" + n, d = localPic(q.picture), f = q.full ? localPic(q.full) : null;
-    if ((!d && !f) || picsSent[qid]) return Promise.resolve();
+    var out = q.kind === "resize";
+    var qid = "r" + r + "q" + n, d = localPic(q.picture, out), f = q.full ? localPic(q.full) : null, m = out && q.moving ? localPic(q.moving, true) : null;
+    if ((!d && !f && !m) || picsSent[qid]) return Promise.resolve();
     picsSent[qid] = true;
     lastSentPic = qid;
     var upd = {};
     if (f) upd["pics/" + qid + "f"] = { data: f.data, w: f.w, h: f.h };
+    if (m) upd["pics/" + qid + "m"] = { data: m.data, w: m.w, h: m.h };
     if (d) upd["pics/" + qid] = { data: d.data, w: d.w, h: d.h };
     return L.update(WQ.ref(""), upd).catch(function (e) { delete picsSent[qid]; warn(e); });
   }
   // The picture ids a phone needs before a question can be shown (only pictures sent through Firebase).
   function picIdsFor(qid) {
     var m = /^r(\d+)q(\d+)$/.exec(qid || ""), rd = m && roundOf(+m[1]), q = rd && rd.questions[+m[2] - 1], ids = [];
-    if (q && q.picture && localPic(q.picture)) ids.push(qid);
+    var out = q && q.kind === "resize";
+    if (q && q.picture && localPic(q.picture, out)) ids.push(qid);
     if (q && q.full && localPic(q.full)) ids.push(qid + "f");
+    if (q && out && q.moving && localPic(q.moving, true)) ids.push(qid + "m");
     return ids;
   }
   function nextQuestionAfter(r, n) {
@@ -369,30 +465,51 @@
   function prunePics(keep) {
     var upd = {};
     Object.keys(picsSent).forEach(function (qid) {
-      if (keep.indexOf(qid) < 0) { upd["pics/" + qid] = null; upd["pics/" + qid + "f"] = null; delete picsSent[qid]; }
+      if (keep.indexOf(qid) < 0) { upd["pics/" + qid] = null; upd["pics/" + qid + "f"] = null; upd["pics/" + qid + "m"] = null; delete picsSent[qid]; }
     });
     if (Object.keys(upd).length) L.update(WQ.ref(""), upd).catch(warn);
   }
 
-  // ---------- The practice (built-in donkey) ----------
-  function practiceQuestion() {
-    var p = WQ.PRACTICE;
+  // ---------- The practices (the donkey for pin rounds, Santa for resize rounds) ----------
+  function practiceQuestion(type) {
+    var p = WQ.PRACTICES[type || "pin"];
+    if (type === "resize") return { kind: "resize", text: p.text, picture: p.picture, moving: p.moving, size: p.size, movingSize: p.movingSize, level: p.level, seconds: p.seconds, note: p.note, practice: true };
     return { kind: "pin", text: p.text, picture: p.picture, target: p.target, level: p.level, marker: p.marker, seconds: p.seconds, practice: true };
   }
-  function practiceDone() { var s = WQ.store.get("wq-host") || {}; return s.code === WQ.code && !!s.practiceDone; }
-  function setPracticeDone() { var s = WQ.store.get("wq-host") || {}; s.practiceDone = true; WQ.store.set("wq-host", s); }
-  function firstPinRound() {
-    for (var i = 0; i < quiz.rounds.length; i++) if (quiz.rounds[i].type === "pin") return quiz.rounds[i].num;
+  function practiceDone(type) {
+    var s = WQ.store.get("wq-host") || {};
+    if (s.code !== WQ.code || !s.practiceDone) return false;
+    return s.practiceDone === true ? (type || "pin") === "pin" : !!s.practiceDone[type || "pin"];
+  }
+  function setPracticeDone(type) {
+    var s = WQ.store.get("wq-host") || {};
+    var done = s.practiceDone === true ? { pin: true } : (s.practiceDone || {});
+    done[type || "pin"] = true;
+    s.practiceDone = done;
+    WQ.store.set("wq-host", s);
+  }
+  function firstRoundOfType(type) {
+    for (var i = 0; i < quiz.rounds.length; i++) if (quiz.rounds[i].type === type) return quiz.rounds[i].num;
     return 0;
   }
+  function needsPractice(r) {
+    var rd = roundOf(r);
+    return !!(rd && WQ.PRACTICES[rd.type] && r === firstRoundOfType(rd.type) && !practiceDone(rd.type));
+  }
   function startPractice() {
-    var s = game.state, rd = roundOf(s.round), p = practiceQuestion();
-    var b = WQ.builtinPic(p.picture);
+    var s = game.state, rd = roundOf(s.round), type = rd.type, p = practiceQuestion(type);
+    var question;
+    if (type === "resize") {
+      var bf = WQ.builtinPic(p.picture), bm = WQ.builtinPic(p.moving);
+      question = { kind: "resize", text: p.text, fixed: { src: bf.src, w: bf.w, h: bf.h }, moving: { src: bm.src, w: bm.w, h: bm.h }, level: p.level };
+    } else {
+      var b = WQ.builtinPic(p.picture);
+      question = { kind: "pin", text: p.text, pic: { src: b.src, w: b.w, h: b.h }, marker: p.marker, level: p.level };
+    }
     return L.set(WQ.ref("state"), {
-      phase: "question", round: s.round, roundTopic: rd.topic, mode: "first", type: "pin", totalRounds: quiz.rounds.length,
-      practice: true, qNum: 0, qCount: rd.questions.length, qid: "practice",
-      question: { kind: "pin", text: p.text, pic: { src: b.src, w: b.w, h: b.h }, marker: p.marker, level: p.level },
-      seconds: p.seconds, startAt: L.serverTimestamp(), lockedCount: 0, teamCount: activeTeams().length
+      phase: "question", round: s.round, roundTopic: rd.topic, mode: "first", type: type, totalRounds: quiz.rounds.length,
+      practice: true, practiceType: type, qNum: 0, qCount: rd.questions.length, qid: type === "pin" ? "practice" : "practice-" + type,
+      question: question, seconds: p.seconds, startAt: L.serverTimestamp(), lockedCount: 0, teamCount: activeTeams().length
     });
   }
 
@@ -419,12 +536,18 @@
       body.appendChild(picturesSection(q));
     }
     if (q && q.rounds.length) {
-      var ten = q.rounds.length === 10;
+      var nR = q.rounds.length, okR = WQ.dpsAllowed(nR);
+      var poisonN = nR >= 10 ? 5 : 4;
       body.appendChild(h("label", { class: "row", style: { marginTop: "14px", fontWeight: "600" } }, [
-        h("input", { type: "checkbox", id: "dps-toggle", checked: ten, disabled: !ten }),
+        h("input", { type: "checkbox", id: "dps-toggle", checked: okR, disabled: !okR }),
         "Play doubles, poison and steals",
-        h("span", { class: "muted small", style: { fontWeight: "400" }, text: ten ? "(captains choose a double round and five poisoned rounds, and every team steals after round 9)" : "(needs exactly 10 rounds)" })
+        h("span", { class: "muted small", style: { fontWeight: "400" }, text: okR
+          ? "(captains choose a double round and " + WQ.NUM_WORD[poisonN] + " poisoned rounds from rounds 1–" + (nR - 1) + ", and every team steals after round " + (nR - 1) + ")"
+          : "(needs 9 or 10 rounds)" })
       ]));
+      body.appendChild(h("p", { class: "muted small", style: { marginTop: "4px" }, text: nR > 5
+        ? "Standings (top half and bottom half) are shown after rounds 4 and " + (nR - 1) + "."
+        : "With " + nR + (nR === 1 ? " round" : " rounds") + ", there are no standings part-way through." }));
     }
     if (res.warnings.length) {
       body.appendChild(h("p", { class: "small", style: { marginTop: "12px", fontWeight: "600" }, text: "Worth knowing:" }));
@@ -440,13 +563,13 @@
     var needed = neededPics(q);
     if (!needed.length) return wrap;
     var missing = missingPics(q);
-    var own = needed.filter(function (k) { return !WQ.builtinPic(k) || picData[k]; });
+    var own = needed.filter(function (k) { return !WQ.builtinPic(bareKey(k)) || picData[k]; });
     wrap.appendChild(h("h3", { style: { marginTop: "6px" }, text: "Pictures" }));
     if (own.length) {
       wrap.appendChild(h("p", { class: missing.length ? "error" : "status ok", style: { marginTop: "4px" },
         text: missing.length ? (own.length - missing.length) + " of " + own.length + " pictures found. Choose the folder with your pictures to carry on."
           : "All " + own.length + (own.length === 1 ? " picture" : " pictures") + " found and ready." }));
-      if (missing.length) wrap.appendChild(h("ul", { class: "issues small" }, missing.map(function (k) { return h("li", { class: "error", text: "Missing: " + k }); })));
+      if (missing.length) wrap.appendChild(h("ul", { class: "issues small" }, missing.map(function (k) { return h("li", { class: "error", text: "Missing: " + bareKey(k) }); })));
       wrap.appendChild(h("div", { class: "row", style: { marginTop: "8px" } }, [
         h("label", { class: "btn" + (missing.length ? " btn-primary" : ""), for: "pics-folder", text: "Choose pictures folder…" }),
         h("label", { class: "btn-link", for: "pics-files", text: "or choose picture files" })
@@ -481,7 +604,37 @@
       wrap.appendChild(grid);
       setTimeout(function () { boards.forEach(function (b) { b.refresh(); }); }, 0);
     }
+    // Resize questions: both pictures at the right size, so the quiz master can check the numbers look right.
+    var rsz = [];
+    q.rounds.forEach(function (rd) { rd.questions.forEach(function (qq, i) { if (qq.kind === "resize") rsz.push({ rd: rd, q: qq, n: i + 1 }); }); });
+    if (rsz.length) {
+      wrap.appendChild(h("p", { class: "small", style: { marginTop: "12px", fontWeight: "600" }, text: "Resize questions: the right answer, at the right size. Players start with both pictures the same height." }));
+      var grid2 = h("div", { class: "pic-check" }), stages = [];
+      rsz.forEach(function (x) {
+        var fig = h("figure"), f = resizePic(x.q.picture), m = resizePic(x.q.moving);
+        if (f && m) {
+          var st = WQ.resizeStage({ fixed: f, moving: m, controls: false, maxH: function () { return 170; } });
+          st.setScale(WQ.resizeRight({ w: f.w, h: f.h, size: x.q.size }, { w: m.w, h: m.h, size: x.q.movingSize }));
+          fig.appendChild(st.el);
+          stages.push(st);
+          [[x.q.picture, f], [x.q.moving, m]].forEach(function (pair) {
+            if (pair[1].opaque) fig.appendChild(h("div", { class: "error small", text: pair[0] + " has no see-through background, so it will show as a block. Use a PNG or SVG outline." }));
+          });
+        } else fig.appendChild(h("div", { class: "pin-loading", style: { position: "static", height: "120px", background: "#eef0f5", borderRadius: "10px" }, text: "Missing picture" }));
+        fig.appendChild(h("figcaption", { title: x.q.text, text: "R" + x.rd.num + " Q" + x.n + " · " + (WQ.RESIZE_LEVELS[x.q.level] || {}).label + " · blue " + x.q.picture + " (" + x.q.size + ") · red " + x.q.moving + " (" + x.q.movingSize + ")" }));
+        grid2.appendChild(fig);
+      });
+      wrap.appendChild(grid2);
+      setTimeout(function () { stages.forEach(function (st) { st.refresh(); }); }, 0);
+    }
     return wrap;
+  }
+  // A resize picture for drawing on this computer: from the pictures folder, or one that comes with the website.
+  function resizePic(name) {
+    var d = localPic(name, true);
+    if (d) return { data: d.data, w: d.w, h: d.h, opaque: d.opaque };
+    var b = WQ.builtinPic(name);
+    return b ? { src: b.src, w: b.w, h: b.h } : null;
   }
   function onPictureFiles(files) {
     var qz = (pendingCheck && pendingCheck.quiz) || quiz;
@@ -504,7 +657,7 @@
   $("create").addEventListener("click", function () {
     if (!pendingCheck || !pendingCheck.quiz) return;
     quiz = pendingCheck.quiz;
-    quiz.dps = !!($("dps-toggle") && $("dps-toggle").checked);
+    quiz.dps = !!($("dps-toggle") && $("dps-toggle").checked) && WQ.dpsAllowed(quiz.rounds.length);
     $("create").disabled = true;
     createGame(0);
   });
@@ -541,6 +694,7 @@
   // ======================================================================
   function openGame(code) {
     WQ.code = code;
+    WQ.setRounds(quiz.rounds.length);
     WQ.show("s-game");
     $("g-code").textContent = code;
     $("g-title").textContent = quiz.title || "Quiz";
@@ -601,24 +755,29 @@
   }
   function roundOf(n) { return quiz.rounds[n - 1]; }
   // Earliest answer in a team (answers arrive in the order the database received them).
+  // The parts of an answer: opt (multiple choice), x and y (pin), yr (year), o (order) or s (resize scale).
+  var ANSWER_KEYS = ["opt", "x", "y", "yr", "o", "s"];
   function firstAnswer(ans) {
     var best = null;
     Object.keys(ans || {}).forEach(function (uid) {
       var a = ans[uid];
-      if (a && typeof a.at === "number" && (!best || a.at < best.at)) best = { uid: uid, opt: a.opt, x: a.x, y: a.y, at: a.at };
+      if (a && typeof a.at === "number" && (!best || a.at < best.at)) {
+        best = { uid: uid, at: a.at };
+        ANSWER_KEYS.forEach(function (k) { if (a[k] !== undefined) best[k] = a[k]; });
+      }
     });
     return best;
   }
-  // A team's locked answer: a letter for multiple choice, or a spot (x, y) for a pin question.
+  // A team's locked answer: a letter for multiple choice, a spot (x, y) for a pin question, a year, an order or a size.
   function lockFrom(a, how) {
     var lock = { at: a.at, how: how };
     if (a.uid) lock.by = a.uid;
-    if (typeof a.x === "number") { lock.x = a.x; lock.y = a.y; } else lock.opt = a.opt;
+    ANSWER_KEYS.forEach(function (k) { if (a[k] !== undefined) lock[k] = a[k]; });
     return lock;
   }
   function currentQuestion() {
     var s = game.state;
-    if (s && s.practice) return practiceQuestion();
+    if (s && s.practice) return practiceQuestion(s.practiceType);
     var rd = s && roundOf(s.round);
     return rd && s.qNum ? rd.questions[s.qNum - 1] : null;
   }
@@ -750,32 +909,65 @@
   }
 
   // ---------- Moving through the quiz ----------
+  // Ordering questions: the order the four things are shown in, kept on this computer (so it survives a refresh).
+  // For each shown position, its place in the right order. Nothing starts in its right place,
+  // so tapping straight down the list scores nothing.
+  function orderShown(qid, n) {
+    var saved = WQ.store.get("wq-host") || {};
+    if (saved.code !== WQ.code) saved = { code: WQ.code, quiz: quiz };
+    saved.orders = saved.orders || {};
+    if (saved.orders[qid] && saved.orders[qid].length === n) return saved.orders[qid];
+    var p, list = [];
+    for (var i = 0; i < n; i++) list.push(i);
+    do { p = shuffleArr(list.slice()); } while (p.some(function (place, d) { return place === d; }));
+    saved.orders[qid] = p;
+    WQ.store.set("wq-host", saved);
+    return p;
+  }
+  // Resize questions: the right size of the red picture compared with the blue one.
+  function resizeRightFor(q) {
+    var f = resizePic(q.picture) || { w: 1, h: 1 }, m = resizePic(q.moving) || { w: 1, h: 1 };
+    return WQ.resizeRight({ w: f.w, h: f.h, size: q.size }, { w: m.w, h: m.h, size: q.movingSize });
+  }
+
   function startQuestion(r, n) {
     var rd = roundOf(r), q = rd.questions[n - 1], qid = "r" + r + "q" + n;
-    var question = q.kind === "pin"
-      ? { kind: "pin", text: q.text, pic: questionPic(q, qid), marker: q.marker || "pin", level: q.level || "medium" }
-      : { text: q.text, options: q.options };
-    var preview = q.kind === "pin" && q.full;
-    if (preview) { question.full = questionPic(q, qid, "full"); question.showFor = q.showFor || WQ.SHOW_FOR; }
-    if (q.kind !== "pin" && q.picture) question.pic = questionPic(q, qid);
+    var question, phase = "question";
+    if (q.kind === "pin") {
+      question = { kind: "pin", text: q.text, pic: questionPic(q, qid), marker: q.marker || "pin", level: q.level || "medium" };
+      if (q.full) { question.full = questionPic(q, qid, "full"); question.showFor = q.showFor || WQ.SHOW_FOR; phase = "preview"; }
+    } else if (q.kind === "year") {
+      var range = WQ.yearRange(q.start);
+      question = { kind: "year", text: q.text, start: q.start, min: range.min, max: range.max, listen: !!q.listen };
+      if (q.listen) phase = "listen";
+    } else if (q.kind === "order") {
+      var shown = orderShown(qid, q.items.length);
+      question = { kind: "order", text: q.text, items: shown.map(function (place) { return q.items[place]; }), top: q.top, bottom: q.bottom };
+    } else if (q.kind === "resize") {
+      question = { kind: "resize", text: q.text, fixed: questionPic(q, qid), moving: questionPic(q, qid, "moving"), level: q.level || "medium" };
+    } else {
+      question = { text: q.text, options: q.options };
+      if (q.picture) question.pic = questionPic(q, qid);
+    }
     var nx = nextQuestionAfter(r, n);
     return sendPic(r, n).then(function () {
       prunePics([qid].concat(nx ? ["r" + nx[0] + "q" + nx[1]] : []));
       // With a "show first" picture, the full picture shows for a few seconds before the clock starts.
+      // With a song to listen to, the clock starts when the quiz master says the song has finished.
       return L.set(WQ.ref("state"), {
-        phase: preview ? "preview" : "question", studyRound: preview ? 1 : null, round: r, roundTopic: rd.topic, mode: rd.mode, type: rd.type || "mc", totalRounds: quiz.rounds.length,
+        phase: phase, studyRound: phase === "preview" ? 1 : null, round: r, roundTopic: rd.topic, mode: rd.mode, type: rd.type || "mc", totalRounds: quiz.rounds.length,
         qNum: n, qCount: rd.questions.length, qid: qid,
         question: question, seconds: q.seconds,
-        startAt: L.serverTimestamp(), lockedCount: 0, teamCount: activeTeams().length
+        startAt: phase === "listen" ? null : L.serverTimestamp(), lockedCount: 0, teamCount: activeTeams().length
       });
     });
   }
 
   function roundIntro(r) {
-    var rd = roundOf(r);
+    var rd = roundOf(r), practice = needsPractice(r);
     return L.set(WQ.ref("state"), {
       phase: "roundIntro", round: r, roundTopic: rd.topic, mode: rd.mode, type: rd.type || "mc", qCount: rd.questions.length, totalRounds: quiz.rounds.length,
-      practice: rd.type === "pin" && r === firstPinRound() && !practiceDone()
+      practice: practice, practiceType: practice ? rd.type : null
     }).then(function () { sendPic(r, 1); });
   }
 
@@ -783,6 +975,7 @@
     var s = game.state, q = currentQuestion();
     if (!q || s.phase !== "closed") return;
     if (q.kind === "pin") return revealPin(s, q);
+    if (q.kind === "year" || q.kind === "order" || q.kind === "resize") return revealScored(s, q);
     var correct = q.answer, total = s.seconds * 1000;
     Promise.all([L.get(WQ.ref("answers/" + s.qid)), L.get(WQ.ref("locks/" + s.qid))]).then(function (snaps) {
       var answers = snaps[0].val() || {}, locks = snaps[1].val() || {};
@@ -815,6 +1008,7 @@
       });
       upd["state/phase"] = "reveal";
       upd["state/correct"] = correct;
+      upd["state/note"] = q.note || null;
       return L.update(WQ.ref(""), upd);
     }).then(sendNextPic).catch(function (e) { alertBox("Couldn't reveal the answer: " + ((e && e.message) || e)); });
   }
@@ -863,9 +1057,68 @@
       upd["state/correctPin"] = { x: q.target.x, y: q.target.y };
       upd["state/dots"] = dots.length ? dots : null;
       upd["state/bulls"] = bulls;
+      upd["state/note"] = q.note || null;
       return L.update(WQ.ref(""), upd);
     }).then(function () {
-      if (practice) setPracticeDone();
+      if (practice) setPracticeDone("pin");
+      sendNextPic();
+    }).catch(function (e) { alertBox("Couldn't reveal the answer: " + ((e && e.message) || e)); });
+  }
+
+  // Guess the year, ordering and resize: accuracy (full, part or none) times the usual speed points.
+  function revealScored(s, q) {
+    var total = s.seconds * 1000, practice = !!s.practice, kind = q.kind;
+    var shown = kind === "order" ? orderShown(s.qid, q.items.length) : null;
+    var right = kind === "resize" ? resizeRightFor(q) : null;
+    function has(a) {
+      return !!a && (kind === "year" ? typeof a.yr === "number" : kind === "order" ? typeof a.o === "string" : typeof a.s === "number");
+    }
+    function score(a) {
+      var acc, out = {};
+      if (kind === "year") { acc = WQ.yearAccuracy(a.yr, q.answer); out.yr = a.yr; out.diff = a.yr - q.answer; }
+      else if (kind === "order") { var n = WQ.orderRight(a.o, shown); acc = n / q.items.length; out.o = a.o; out.right = n; }
+      else { var off = WQ.resizeOff(a.s, right); acc = WQ.resizeAccuracy(off, q.level); out.s = Math.round(a.s * 10000) / 10000; out.off = Math.round(off * 10) / 10; }
+      out.acc = Math.round(acc * 1000) / 1000;
+      out.correct = acc >= 1;
+      out.points = practice ? 0 : Math.round(acc * WQ.speedPoints(WQ.elapsed(s, a.at), total));
+      return out;
+    }
+    return Promise.all([L.get(WQ.ref("answers/" + s.qid)), L.get(WQ.ref("locks/" + s.qid))]).then(function (snaps) {
+      var answers = snaps[0].val() || {}, locks = snaps[1].val() || {};
+      var upd = {}, guesses = [], best = 0, near = 0, counts = {};
+      activeTeams().forEach(function (tid) {
+        var lock = locks[tid], fa = firstAnswer(answers[tid] || {}), res;
+        var a = has(lock) ? lock : (has(fa) ? lockFrom(fa, "first") : null);
+        if (a) {
+          res = score(a);
+          res.how = a.how || "first";
+          if (a.by) res.by = a.by;
+        } else res = { how: "none", correct: false, points: 0 };
+        res.round = s.round; res.q = s.qNum;
+        if (!practice) upd["results/" + tid + "/q/" + s.qid] = res;
+      });
+      Object.keys(answers).forEach(function (tid) {
+        Object.keys(answers[tid] || {}).forEach(function (uid) {
+          var a = answers[tid][uid];
+          if (!has(a)) return;
+          var sc = score(a);
+          if (sc.acc >= 1) best++;
+          if (kind === "year") { guesses.push(a.yr); if (Math.abs(sc.diff) === 1) near++; }
+          if (kind === "resize") guesses.push(sc.s);
+          if (kind === "order") counts["n" + sc.right] = (counts["n" + sc.right] || 0) + 1;
+          if (!practice) { sc.round = s.round; upd["pscores/" + uid + "/q/" + s.qid] = sc; }
+        });
+      });
+      shuffleArr(guesses);
+      upd["state/phase"] = "reveal";
+      upd["state/note"] = q.note || null;
+      upd["state/best"] = best;
+      if (kind === "year") { upd["state/correctYear"] = q.answer; upd["state/near"] = near; upd["state/guesses"] = guesses.length ? guesses : null; }
+      if (kind === "order") { upd["state/correctOrder"] = shown; upd["state/rightCounts"] = Object.keys(counts).length ? counts : null; }
+      if (kind === "resize") { upd["state/correctScale"] = Math.round(right * 10000) / 10000; upd["state/guesses"] = guesses.length ? guesses : null; }
+      return L.update(WQ.ref(""), upd);
+    }).then(function () {
+      if (practice) setPracticeDone(kind);
       sendNextPic();
     }).catch(function (e) { alertBox("Couldn't reveal the answer: " + ((e && e.message) || e)); });
   }
@@ -1087,11 +1340,13 @@
         var mp = missingCount("picks");
         return { label: "Start round 1" + (mp ? " (" + plural(mp, "team hasn't", "teams haven't") + " chosen: random picks)" : ""), run: startAfterPicks };
       case "roundIntro":
-        if (roundOf(s.round).type === "pin" && s.round === firstPinRound() && !practiceDone()) {
-          return { label: "Start the practice: pin the tail on the donkey (not scored)", run: startPractice,
-            alt: { label: "Skip the practice", run: function () { setPracticeDone(); return L.update(WQ.ref("state"), { practice: false }); } } };
+        if (needsPractice(s.round)) {
+          var pType = roundOf(s.round).type;
+          return { label: pType === "resize" ? "Start the practice: Santa and the Christmas tree (not scored)" : "Start the practice: pin the tail on the donkey (not scored)", run: startPractice,
+            alt: { label: "Skip the practice", run: function () { setPracticeDone(pType); return L.update(WQ.ref("state"), { practice: false, practiceType: null }); } } };
         }
         return { label: "Start question 1", run: function () { return startQuestion(s.round, 1); } };
+      case "listen": return { label: "Start the question (the song has finished)", run: beginAnswering };
       case "preview": return { label: "Players are studying the picture…", disabled: true };
       case "ready":
         var rc = readyCounts(), tally = rc.yes + " ready, " + rc.no + " not ready";
@@ -1314,6 +1569,17 @@
     hostBoard = { key: key, board: board };
     return board;
   }
+  // The quiz master's view of a resize question: both pictures at the right size.
+  var hostStage = { key: null, stage: null };
+  function hostStageFor(q, key) {
+    if (hostStage.key === key && hostStage.stage) return hostStage.stage;
+    var f = resizePic(q.picture), m = resizePic(q.moving);
+    if (!f || !m) return null;
+    var st = WQ.resizeStage({ fixed: f, moving: m, controls: false, maxH: function () { return 240; }, maxW: function () { return 460; } });
+    st.setScale(resizeRightFor(q));
+    hostStage = { key: key, stage: st };
+    return st;
+  }
   function teamPins(s) {
     var out = [];
     teamIds().forEach(function (tid, i) {
@@ -1353,6 +1619,7 @@
       topics: "Showing the round topics",
       roundIntro: "Round " + s.round + " intro",
       question: s.practice ? "Practice live (not scored)" : "Question live",
+      listen: "Players are listening to the song",
       preview: (s.studyRound > 1 ? "Showing the picture again" : "Players are studying the full picture") + " (" + ((s.question && s.question.showFor) || WQ.SHOW_FOR) + " seconds)",
       ready: "Ready? Players are answering Yes or No",
       closed: "Time's up",
@@ -1369,37 +1636,52 @@
     if (s.round) {
       where = "Round " + s.round + " of " + total + " · " + (s.roundTopic || "") + " · " + (WQ.MODE_LABEL[s.mode] || "");
       if (s.practice && ["question", "closed", "reveal"].indexOf(s.phase) >= 0) where += " · Practice";
-      else if (s.qNum && ["preview", "ready", "question", "closed", "reveal"].indexOf(s.phase) >= 0) where += " · Question " + s.qNum + " of " + s.qCount;
+      else if (s.qNum && ["preview", "ready", "listen", "question", "closed", "reveal"].indexOf(s.phase) >= 0) where += " · Question " + s.qNum + " of " + s.qCount;
     }
     $("c-where").textContent = where;
 
     // Question preview, for reading out
     var qbox = WQ.clear($("c-question"));
     var q = currentQuestion();
-    var showQ = q && ["preview", "ready", "question", "closed", "reveal"].indexOf(s.phase) >= 0;
+    var showQ = q && ["preview", "ready", "listen", "question", "closed", "reveal"].indexOf(s.phase) >= 0;
     var upcoming = false;
-    if (!showQ && s.phase === "roundIntro") { q = s.practice ? practiceQuestion() : roundOf(s.round).questions[0]; showQ = !!q; upcoming = true; }
+    if (!showQ && s.phase === "roundIntro") { q = s.practice ? practiceQuestion(s.practiceType) : roundOf(s.round).questions[0]; showQ = !!q; upcoming = true; }
     if (showQ) {
       var card = h("div", { class: "card", style: { background: "#f6f7fb", marginTop: "10px" } }, [
         h("div", { class: "muted small", text: (upcoming ? "Up next" : "Question") + (q.practice ? " · practice, not scored" : "") }),
         h("div", { style: { fontWeight: "700", fontSize: "1.1rem", margin: "4px 0 8px" }, text: q.text })
       ]);
+      var key = (upcoming ? "next:" : "") + (q.practice ? "practice-" + q.kind : s.qid || ("r" + s.round + "q1"));
+      var hb = null, hs = null;
       if (q.kind === "pin") {
         card.appendChild(h("div", { class: "small muted", text: (WQ.PIN_LEVELS[q.level] || WQ.PIN_LEVELS.medium).label + " · " + q.seconds + " seconds · " + q.picture + " · the gold spot is the answer" +
           (q.full ? " · " + q.full + " shows first for " + (q.showFor || WQ.SHOW_FOR) + " s" : "") }));
+      } else if (q.kind === "year") {
+        card.appendChild(h("div", { style: { fontWeight: "800", color: "var(--ok)", fontSize: "1.3rem" }, text: "Answer: " + q.answer }));
+        card.appendChild(h("div", { class: "small muted", text: q.seconds + " seconds · the wheel starts at " + q.start +
+          (q.listen ? " · players listen first, then you start the question" : " · no listening step") }));
+      } else if (q.kind === "order") {
+        card.appendChild(h("div", { class: "small muted", text: "The right order (" + q.seconds + " seconds):" }));
+        card.appendChild(WQ.orderList(q.items, q.items.map(function (x, i) { return i; }), q.top, q.bottom));
+      } else if (q.kind === "resize") {
+        card.appendChild(h("div", { class: "small muted", text: (WQ.RESIZE_LEVELS[q.level] || WQ.RESIZE_LEVELS.medium).label + " · " + q.seconds + " seconds · blue " + q.picture + " (" + q.size + ") · red " + q.moving + " (" + q.movingSize + ") · shown at the right size" }));
+        hs = hostStageFor(q, key);
+        if (hs) card.appendChild(hs.el);
       } else {
         card.appendChild(h("div", { class: "small" }, q.options.map(function (o, i) {
           var isAns = WQ.LETTERS[i] === q.answer;
           return h("div", { style: isAns ? { fontWeight: "800", color: "var(--ok)" } : null, text: WQ.LETTERS[i] + ". " + o + (isAns ? "  ✓ answer" : "") });
         })));
       }
-      var hb = q.picture ? hostBoardFor(q, (upcoming ? "next:" : "") + (q.practice ? "practice" : s.qid || ("r" + s.round + "q1"))) : null;
+      if (q.note) card.appendChild(h("div", { class: "small", style: { marginTop: "6px" }, text: "Reveal note: " + q.note }));
+      if (q.kind !== "resize" && q.picture) hb = hostBoardFor(q, key);
       if (hb) {
         card.appendChild(hb.el);
         if (q.kind === "pin" && !upcoming) hb.setOthers(teamPins(s));
       }
       qbox.appendChild(card);
       if (hb) hb.refresh();
+      if (hs) hs.refresh();
     }
     if (s.phase === "ready") {
       var c2 = readyCounts(), waiting = Math.max(0, c2.of - c2.yes - c2.no);
@@ -1492,12 +1774,20 @@
           if (x.how === "first") return "first in: " + playerName(x.by);
           return { agreed: "agreed", timeout: "time ran out: captain's pick", none: "no answer" }[x.how] || x.how;
         };
-        var isPin = s.question && s.question.kind === "pin";
-        var teamAns;
-        if (isPin) {
-          var pr = s.practice ? null : res;
+        var kind = s.question && s.question.kind;
+        var teamAns, pr = s.practice ? null : res;
+        if (kind === "pin") {
           teamAns = pr ? (pr.how === "none" ? "No pin" : WQ.pct(pr.acc) + " accurate (" + howText(pr) + ")")
             : lock ? "📍 pinned (" + howText(lock) + ")" : (s.phase === "question" ? "…" : "no pin");
+        } else if (kind === "year") {
+          teamAns = pr ? (pr.how === "none" ? "No year" : pr.yr + " (" + (pr.diff === 0 ? "spot on" : Math.abs(pr.diff) + " out") + ", " + howText(pr) + ")")
+            : lock && typeof lock.yr === "number" ? lock.yr + " (" + howText(lock) + ")" : (s.phase === "question" ? "…" : "no year");
+        } else if (kind === "order") {
+          teamAns = pr ? (pr.how === "none" ? "No order" : pr.right + " of " + WQ.ORDER_ITEMS + " in the right place (" + howText(pr) + ")")
+            : lock && lock.o ? "🔢 locked in (" + howText(lock) + ")" : (s.phase === "question" ? "…" : "no order");
+        } else if (kind === "resize") {
+          teamAns = pr ? (pr.how === "none" ? "No answer" : WQ.pct(pr.acc) + " (" + Math.round(pr.off) + "% off, " + howText(pr) + ")")
+            : lock && typeof lock.s === "number" ? "📏 locked in (" + howText(lock) + ")" : (s.phase === "question" ? "…" : "no answer");
         } else {
           teamAns = res ? (res.opt ? res.opt + " (" + howText(res) + ")" : "No answer")
             : lock ? lock.opt + " (" + howText(lock) + ")" : (s.phase === "question" ? "…" : "not locked");

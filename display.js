@@ -27,6 +27,7 @@
     WQ.listen("meta", function (v) {
       g.meta = v;
       if (!v) return message("There's no game with the code " + code + ".");
+      WQ.setRounds(v.totalRounds);
       setTheme(v.theme || "festive");
       render();
     });
@@ -44,7 +45,7 @@
         im.onerror = function () { delete picLoading[id]; };
         im.src = p.data;
       });
-      Object.keys(picCache).forEach(function (id) { if (!v[id] && !(g.state && (g.state.qid === id || g.state.qid + "f" === id))) delete picCache[id]; });
+      Object.keys(picCache).forEach(function (id) { if (!v[id] && !(g.state && (g.state.qid === id || g.state.qid + "f" === id || g.state.qid + "m" === id))) delete picCache[id]; });
     });
   }
 
@@ -95,7 +96,7 @@
     var main = WQ.clear($("d-main"));
     var fn = {
       lobby: drawLobby, topics: drawTopics, roundIntro: drawRoundIntro, question: drawQuestion, closed: drawQuestion,
-      preview: drawQuestion, ready: drawQuestion,
+      preview: drawQuestion, ready: drawQuestion, listen: drawQuestion,
       reveal: drawQuestion, roundEnd: drawRoundEnd, standings: drawStandings, final: drawFinal,
       picks: drawPicks, steal: drawSteal, stealReveal: drawStealReveal
     }[s.phase] || drawLobby;
@@ -133,20 +134,27 @@
   function drawTopics(main) {
     main.appendChild(h("h1", { text: "Tonight's rounds" }));
     main.appendChild(h("div", { class: "topics" }, roundsList().map(function (rd) {
-      return h("div", null, [h("span", { class: "num", text: rd.num }), rd.topic, " ", h("span", { class: "pill", text: rd.type === "pin" ? "📍 " + WQ.TYPE_LABEL.pin : WQ.MODE_LABEL[rd.mode] })]);
+      return h("div", null, [h("span", { class: "num", text: rd.num }), rd.topic, " ", h("span", { class: "pill", text: WQ.typePill(rd) })]);
     })));
   }
 
+  var INTRO_HELP = {
+    pin: "A picture appears with something to find or put back. Tap where it belongs on your phone, drag to adjust, then press Lock in. The closer and quicker, the more points. The first teammate to lock in sets the team's pin, so agree first!",
+    year: "Listen to the song, then turn the wheel on your phone to the year it came out and press Lock in. The right year scores full points, one year out scores half. The first teammate to lock in sets the team's year, so agree first!",
+    order: "Tap the four things on your phone in the right order, then press Lock in. Each one in its right place scores a quarter of the points. The first teammate to lock in sets the team's order, so agree first!",
+    resize: "Make the red picture the right size next to the blue one with the slider on your phone, then press Lock in. The closer and quicker, the more points. The first teammate to lock in sets the team's answer, so agree first!"
+  };
+  var PRACTICE_LINE = { pin: "First, a practice with a donkey. It doesn't count!", resize: "First, a practice with Santa and the Rockefeller Center tree. It doesn't count!" };
   function drawRoundIntro(main, s) {
-    var help = s.type === "pin" ? "A picture appears with something to find or put back. Tap where it belongs on your phone, drag to adjust, then press Lock in. The closer and quicker, the more points. The first teammate to lock in sets the team's pin, so agree first!"
-      : s.mode !== "agree" ? "The first tap in each team locks in the team's answer, so talk it through before anyone taps! Everyone answers for their own score too."
-      : "Each team's answer locks in when everyone picks the same option. If time runs out, the captain's pick counts for half points.";
+    var help = INTRO_HELP[s.type]
+      || (s.mode !== "agree" ? "The first tap in each team locks in the team's answer, so talk it through before anyone taps! Everyone answers for their own score too."
+      : "Each team's answer locks in when everyone picks the same option. If time runs out, the captain's pick counts for half points.");
     main.appendChild(h("div", { class: "center" }, [
       h("h2", { text: "Round " + s.round }),
       h("h1", { style: { fontSize: "4em" }, text: s.roundTopic }),
-      h("p", null, [h("span", { class: "pill", style: { fontSize: "1em" }, text: s.type === "pin" ? "📍 " + WQ.TYPE_LABEL.pin + " · " + WQ.MODE_LABEL.first : WQ.MODE_LABEL[s.mode] })]),
+      h("p", null, [h("span", { class: "pill", style: { fontSize: "1em" }, text: WQ.FIRST_ONLY[s.type] ? WQ.typePill(s) + " · " + WQ.MODE_LABEL.first : WQ.MODE_LABEL[s.mode] })]),
       h("p", { class: "muted", style: { maxWidth: "40em", margin: "2vh auto 0" }, text: help }),
-      s.practice ? h("p", { class: "gold-text", style: { fontSize: "1.2em", marginTop: "2vh" }, text: "First, a practice with a donkey. It doesn't count!" }) : null
+      s.practice ? h("p", { class: "gold-text", style: { fontSize: "1.2em", marginTop: "2vh" }, text: PRACTICE_LINE[s.practiceType || "pin"] || PRACTICE_LINE.pin }) : null
     ]));
   }
 
@@ -207,6 +215,7 @@
       var dots = WQ.arr(s.dots), bulls = s.bulls || 0;
       left.appendChild(h("div", { class: "pin-stats", text: dots.length + (dots.length === 1 ? " pin" : " pins") + (bulls ? " · 🎯 " + bulls + (bulls === 1 ? " bullseye" : " bullseyes") : "") }));
       left.appendChild(h("p", { class: "muted", text: "The gold ring is the right spot. Check your phone for your points." }));
+      if (s.note) left.appendChild(h("p", { class: "reveal-note", text: s.note }));
     }
     var board;
     if (looking) {
@@ -225,9 +234,86 @@
     board.refresh();
   }
 
+  // ---------- Guess the year, ordering and resize ----------
+  var stageCache = { key: null, stage: null };
+  function lockedLine(s) { return h("div", { class: "locked", text: "Teams locked in: " + (s.lockedCount || 0) + " of " + (s.teamCount || 0) }); }
+  function headLine(s) {
+    return h("div", { class: "muted", style: { marginBottom: "1vh" }, text: s.roundTopic + " · " + (s.practice ? "Practice (doesn't count)" : "Question " + s.qNum + " of " + s.qCount) });
+  }
+  function noteLine(s) { return s.note ? h("p", { class: "reveal-note", text: s.note }) : null; }
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+
+  function drawNewQuestion(main, s) {
+    var q = s.question, live = s.phase === "question", reveal = s.phase === "reveal", kind = q.kind;
+    if (s.phase === "listen") {
+      main.appendChild(h("div", { class: "center" }, [
+        headLine(s),
+        h("div", { class: "listen-big", text: "🎵" }),
+        h("h1", { style: { fontSize: "4em", margin: ".2em 0" }, text: "Listen!" }),
+        h("div", { class: "question-text", text: q.text }),
+        h("p", { class: "muted", text: "The year wheel appears on your phone when the song finishes." })
+      ]));
+      return;
+    }
+    var left = h("div", null, [headLine(s), h("div", { class: "question-text", text: q.text })]);
+    var right = null;
+    if (live) {
+      left.appendChild(questionTimer(s));
+      left.appendChild(lockedLine(s));
+      left.appendChild(h("p", { class: "muted", style: { marginTop: "2vh" }, text: { year: "Turn the wheel on your phone, then press Lock in.", order: "Tap them in order on your phone, then press Lock in.", resize: "Resize the red picture on your phone, then press Lock in." }[kind] }));
+    } else if (s.phase === "closed") left.appendChild(h("div", { class: "locked", text: "Time's up!" }));
+
+    if (kind === "year") {
+      if (reveal) {
+        var guesses = WQ.arr(s.guesses);
+        main.appendChild(h("div", { class: "year-reveal" }, [
+          h("div", null, [headLine(s), h("div", { class: "muted", text: "The answer" }), h("div", { class: "year-answer", text: String(s.correctYear) }), noteLine(s),
+            h("div", { class: "stat-line", text: plural(s.best || 0, "spot on", "spot on") + " · " + plural(s.near || 0, "one year out", "one year out") })]),
+          WQ.yearChart(guesses, s.correctYear)
+        ]));
+        return;
+      }
+      main.appendChild(h("div", { class: "center" }, [left]));
+      left.style.maxWidth = "60em"; left.style.margin = "0 auto";
+      return;
+    }
+    if (kind === "order") {
+      var items = WQ.arr(q.items);
+      if (reveal) {
+        var rc = s.rightCounts || {};
+        left.appendChild(h("div", { class: "stat-line", text: plural(rc.n4 || 0, "perfect order", "perfect orders") + " · " + plural(rc.n2 || 0, "with 2 right", "with 2 right") + " · " + plural(rc.n1 || 0, "with 1 right", "with 1 right") }));
+        var nl = noteLine(s); if (nl) left.appendChild(nl);
+        right = WQ.orderList(items, WQ.arr(s.correctOrder), q.top, q.bottom);
+      } else {
+        right = h("div", { class: "ord-show" }, [h("div", { class: "ord-end", text: "▲ " + q.top + " … " + q.bottom + " ▼" })].concat(items.map(function (t) { return h("div", { class: "ord-tile" }, [t]); })));
+      }
+      main.appendChild(h("div", { class: "pin-layout" }, [left, h("div", null, [right])]));
+      return;
+    }
+    // resize
+    if (stageCache.key !== s.qid) {
+      stageCache = { key: s.qid, stage: WQ.resizeStage({ fixed: picSource(q.fixed), moving: picSource(q.moving), controls: false,
+        maxH: function () { return window.innerHeight * (reveal ? 0.5 : 0.66); }, maxW: function () { return window.innerWidth * 0.56; } }) };
+    }
+    var st = stageCache.stage;
+    st.setPics(picSource(q.fixed), picSource(q.moving));
+    st.setScale(reveal && s.correctScale ? s.correctScale : 1);
+    var box = h("div", null, [st.el]);
+    if (reveal) {
+      left.appendChild(h("div", { class: "stat-line", text: plural(s.best || 0, "spot on", "spot on") + (s.practice ? " (practice)" : "") }));
+      var n2 = noteLine(s); if (n2) left.appendChild(n2);
+      box.appendChild(WQ.resizeStrip(WQ.arr(s.guesses), s.correctScale, q.level));
+    } else {
+      left.appendChild(h("p", { class: "muted", text: "Blue stays put. Red starts the same height." }));
+    }
+    main.appendChild(h("div", { class: "pin-layout" }, [left, box]));
+    st.refresh();
+  }
+
   function drawQuestion(main, s) {
     var q = s.question || { text: "", options: [] };
     if (q.kind === "pin") return drawPinQuestion(main, s);
+    if (q.kind === "year" || q.kind === "order" || q.kind === "resize") return drawNewQuestion(main, s);
     var live = s.phase === "question", reveal = s.phase === "reveal";
     main.appendChild(h("div", { class: "muted", style: { marginBottom: "1vh" },
       text: s.roundTopic + " · Question " + s.qNum + " of " + s.qCount + " · " + WQ.MODE_LABEL[s.mode] }));
@@ -246,6 +332,7 @@
     })));
     if (live) main.appendChild(h("div", { class: "locked center", text: "Teams locked in: " + (s.lockedCount || 0) + " of " + (s.teamCount || 0) }));
     else if (s.phase === "closed") main.appendChild(h("div", { class: "locked center", text: "Time's up!" }));
+    else if (reveal && s.note) main.appendChild(h("p", { class: "reveal-note center", style: { marginTop: "2vh" }, text: s.note }));
   }
 
   function drawRoundEnd(main, s) {
@@ -295,8 +382,8 @@
     main.appendChild(h("h1", { class: "center", text: "Captains: choose your rounds" }));
     main.appendChild(h("div", { class: "rules-row" }, [
       ruleCard("×2", "Double", "One round that counts twice at the end. It can still be stolen!"),
-      ruleCard("☠", "Poison", "Five rounds that bite back: a team that tries to steal one loses those points."),
-      ruleCard("🎁", "Steal", "After round 9, every team must steal one round from another team.")
+      ruleCard("☠", "Poison", WQ.NUM_WORD[WQ.DPS_POISON].replace(/^./, function (c) { return c.toUpperCase(); }) + " rounds that bite back: a team that tries to steal one loses those points."),
+      ruleCard("🎁", "Steal", "After round " + WQ.DPS_STEAL_AFTER + ", every team must steal one round from another team.")
     ]));
     main.appendChild(h("div", { class: "topics compact" }, roundsList().filter(function (rd) { return rd.num <= WQ.DPS_ROUNDS; }).map(function (rd) {
       return h("div", null, [h("span", { class: "num", text: rd.num }), rd.topic]);
@@ -307,7 +394,7 @@
   function drawSteal(main, s) {
     main.appendChild(h("h1", { class: "center", text: "🎁 Steal time!" }));
     main.appendChild(h("p", { class: "center muted", style: { maxWidth: "46em", margin: "0 auto 2vh", fontSize: "1.1em" },
-      text: "Captains: pick another team and one of their rounds (1–9). If it was poisoned, you lose those points. If not, you take them, doubled if it was their double round!" }));
+      text: "Captains: pick another team and one of their rounds (1–" + WQ.DPS_ROUNDS + "). If it was poisoned, you lose those points. If not, you take them, doubled if it was their double round!" }));
     if (s.standings) main.appendChild(halfTableEl(s.standings));
     main.appendChild(statusGrid(s));
   }

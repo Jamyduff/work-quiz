@@ -30,6 +30,7 @@
     WQ.pinBusy = b;
     if (!b) { var list = afterBusy; afterBusy = []; list.forEach(function (f) { f(); }); }
   }
+  WQ.setBusy = setBusy;   // also used by the year wheel and the resize slider
 
   function markerEl(kind, cls, label) {
     var m = MARKERS[kind] || MARKERS.pin;
